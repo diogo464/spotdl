@@ -199,7 +199,7 @@ struct SyncDownloadArgs {
     #[clap(flatten)]
     env_auth: EnvAuth,
 
-    #[clap(long)]
+    #[clap(long, env = "SPOTDL_SYNC_DIR")]
     output_dir: Option<PathBuf>,
 
     #[clap(long, env = "SPOTDL_FORMAT")]
