@@ -609,9 +609,19 @@ async fn helper_download_task(
                 .arg("-b:a")
                 .arg("320k")
                 .arg("-y")
-                .arg(&output);
-            let status = ffmpeg.status().await.context("running ffmpeg")?;
-            if !status.success() {
+                .arg(&output)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let output = ffmpeg.output().await.context("running ffmpeg")?;
+            if !output.status.success() {
+                tracing::error!(
+                    "ffmpeg stdout:\n{}",
+                    String::from_utf8_lossy(&output.stdout)
+                );
+                tracing::error!(
+                    "ffmpeg stderr:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
                 return Err(anyhow::anyhow!("ffmpeg failed"));
             }
             tokio::fs::remove_file(wav_path)
