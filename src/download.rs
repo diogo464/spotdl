@@ -13,8 +13,9 @@ pub use memory::MemoryDownloadSink;
 
 use crate::{session::Session, Resource, ResourceId, SpotifyId};
 
-pub const SAMPLE_RATE: u32 = librespot::playback::SAMPLE_RATE;
-pub const NUM_CHANNELS: u8 = librespot::playback::NUM_CHANNELS;
+pub const SAMPLE_RATE: u32 = librespot::playback::SAMPLE_RATE as u32;
+pub const NUM_CHANNELS: u32 = librespot::playback::NUM_CHANNELS as u32;
+pub const BITS_PER_SAMPLE: u32 = 16;
 
 type ErrSender = tokio::sync::oneshot::Sender<Option<std::io::Error>>;
 type ErrReceiver = tokio::sync::oneshot::Receiver<Option<std::io::Error>>;

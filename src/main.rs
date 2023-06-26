@@ -1,7 +1,8 @@
 #![feature(io_error_other)]
 
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
+    ffi::OsStr,
     path::{Path, PathBuf},
 };
 
@@ -14,12 +15,6 @@ use spotdl::{
     Credentials, LoginCredentials, Resource, ResourceId, SpotifyId,
 };
 use tokio::io::AsyncWriteExt;
-
-// TODO
-// - improve the download pipeline
-// - improve the file path creation
-//      - if album has multiple discs then create a folder for each disc
-//      - find invalid characters in the file path and replace them. ex 'Love/Paranoia' -> 'Love_Paranoia'
 
 const TAG_SPOTIFY_TRACK_ID: &str = "SPOTIFY_TRACK_ID";
 const TAG_SPOTIFY_ALBUM_ID: &str = "SPOTIFY_ALBUM_ID";
@@ -53,6 +48,7 @@ enum SubCmd {
     Download(DownloadArgs),
     Scan(ScanArgs),
     Sync(SyncArgs),
+    Update(UpdateArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -214,6 +210,17 @@ struct SyncDownloadArgs {
 
     #[clap(flatten)]
     manifest: EnvManifest,
+}
+
+#[derive(Debug, Parser)]
+struct UpdateArgs {
+    #[clap(flatten)]
+    env_cache_dir: EnvCacheDir,
+
+    #[clap(flatten)]
+    env_auth: EnvAuth,
+
+    path: PathBuf,
 }
 
 async fn subcmd_login(args: LoginArgs) -> Result<()> {
@@ -413,6 +420,44 @@ async fn subcmd_sync_download(args: SyncDownloadArgs) -> Result<()> {
     Ok(())
 }
 
+async fn subcmd_update(args: UpdateArgs) -> Result<()> {
+    let files = helper_collect_files(&args.path).await?;
+    let credentials = helper_get_credentials(&args.env_cache_dir, &args.env_auth).await?;
+    let session = Session::connect(credentials).await?;
+    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.env_cache_dir)?);
+    let fetcher = MetadataFetcher::new(session.clone(), cache);
+
+    for file in files {
+        let id = match helper_scan_track_id_in_file(&file).await {
+            Some(id) => id,
+            None => continue,
+        };
+
+        tracing::info!("updating metadata for {}", file.display());
+        let track = fetcher.get_track(id).await?;
+        let tags = helper_metadata_to_tag(&fetcher, &track).await?;
+        if file.extension() == Some(OsStr::new("wav")) {
+            tags.write_to_wav_path(&file, id3::Version::Id3v24)
+                .with_context(|| {
+                    format!(
+                        "failed to write metadata to file: {}",
+                        file.to_string_lossy()
+                    )
+                })?;
+        } else {
+            tags.write_to_path(&file, id3::Version::Id3v24)
+                .with_context(|| {
+                    format!(
+                        "failed to write metadata to file: {}",
+                        file.to_string_lossy()
+                    )
+                })?;
+        }
+    }
+
+    Ok(())
+}
+
 #[allow(dead_code)]
 type TrackIdSender = tokio::sync::mpsc::Sender<SpotifyId>;
 type TrackIdReceiver = tokio::sync::mpsc::Receiver<SpotifyId>;
@@ -483,10 +528,7 @@ async fn helper_download_task(
     format: Option<String>,
     ffmpeg_path: Option<PathBuf>,
 ) -> Result<()> {
-    tokio::fs::create_dir_all(&out_dir)
-        .await
-        .context("creating output directory")?;
-
+    let tempdir = tempfile::tempdir().context("creating temporary directory")?;
     let known_tracks = helper_scan_track_ids_in_dir(&out_dir).await?;
     let known_tracks: HashSet<SpotifyId> = HashSet::from_iter(known_tracks.into_iter());
 
@@ -510,7 +552,7 @@ async fn helper_download_task(
             wav::WAV_FORMAT_PCM,
             spotdl::download::NUM_CHANNELS as u16,
             spotdl::download::SAMPLE_RATE as u32,
-            16,
+            spotdl::download::BITS_PER_SAMPLE as u16,
         );
 
         tracing::info!(
@@ -521,22 +563,33 @@ async fn helper_download_task(
             track.name
         );
 
-        let mut track_path = out_dir.clone();
-        track_path.push(artist.name);
-        track_path.push(album.name);
-        tokio::fs::create_dir_all(&track_path)
-            .await
-            .context("creating track directory")?;
-        let track_name = track.name.replace("/", "_");
-        track_path.push(format!("{} - {}.wav", track.track_number, track_name));
+        let (wav_path, final_path) = {
+            let track_path = helper_make_track_path(&artist, &album, &track);
+            let wav_path = tempdir.path().join(&track_path);
+            let final_path = out_dir.join(&track_path);
+            (wav_path, final_path)
+        };
+
+        if let Some(wav_parent) = wav_path.parent() {
+            tokio::fs::create_dir_all(wav_parent)
+                .await
+                .context("creating track directory")?;
+        }
+
+        if let Some(final_parent) = final_path.parent() {
+            tokio::fs::create_dir_all(final_parent)
+                .await
+                .context("creating track directory")?;
+        }
+
         buffer.clear();
         let mut cursor = std::io::Cursor::new(&mut buffer);
         wav::write(header, &wav::BitDepth::Sixteen(samples), &mut cursor)
             .context("writing wav file")?;
-        let mut track_file = tokio::fs::File::create(&track_path)
+        let mut wav_file = tokio::fs::File::create(&wav_path)
             .await
-            .with_context(|| format!("creating track file {}", track_path.display()))?;
-        track_file
+            .with_context(|| format!("creating track file {}", wav_path.display()))?;
+        wav_file
             .write_all(&buffer)
             .await
             .context("writing track file")?;
@@ -544,15 +597,15 @@ async fn helper_download_task(
         let tag = helper_metadata_to_tag(&fetcher, &track)
             .await
             .context("getting metadata")?;
-        tag.write_to_wav_path(&track_path, id3::Version::Id3v24)
+        tag.write_to_wav_path(&wav_path, id3::Version::Id3v24)
             .context("writing metadata")?;
 
         if let Some(ref format) = format {
             let mut ffmpeg = tokio::process::Command::new(&ffmpeg_path);
-            let output = track_path.with_extension(format);
+            let output = final_path.with_extension(format);
             ffmpeg
                 .arg("-i")
-                .arg(&track_path)
+                .arg(&wav_path)
                 .arg("-b:a")
                 .arg("320k")
                 .arg("-y")
@@ -561,13 +614,36 @@ async fn helper_download_task(
             if !status.success() {
                 return Err(anyhow::anyhow!("ffmpeg failed"));
             }
-            tokio::fs::remove_file(&track_path)
+            tokio::fs::remove_file(wav_path)
+                .await
+                .context("removing wav file")?;
+        } else {
+            tokio::fs::copy(&wav_path, final_path)
+                .await
+                .context("copying wav file")?;
+            tokio::fs::remove_file(&wav_path)
                 .await
                 .context("removing wav file")?;
         }
     }
 
     Ok(())
+}
+
+fn helper_make_track_path(
+    artist: &spotdl::metadata::Artist,
+    album: &spotdl::metadata::Album,
+    track: &spotdl::metadata::Track,
+) -> PathBuf {
+    let mut track_rel_path = PathBuf::default();
+    let track_path_name = track.name.replace("/", "-");
+    track_rel_path.push(&artist.name);
+    track_rel_path.push(&album.name);
+    if album.discs.len() > 1 {
+        track_rel_path.push(format!("Disc {}", track.disc_number));
+    }
+    track_rel_path.push(format!("{} - {}.wav", track.track_number, track_path_name));
+    track_rel_path
 }
 
 async fn helper_read_manifest(path: &Path) -> Result<Manifest> {
@@ -698,6 +774,27 @@ async fn helper_metadata_to_tag(
         }
     }
 
+    // add cover image
+    if let Some(cover) = album.cover {
+        let response = reqwest::get(&cover)
+            .await
+            .context("downloading cover image")?;
+        let mimetype = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/jpeg")
+            .to_owned();
+        let data = response.bytes().await.context("reading cover image")?;
+
+        tag.add_frame(id3::frame::Picture {
+            mime_type: mimetype.to_owned(),
+            picture_type: id3::frame::PictureType::CoverFront,
+            description: String::default(),
+            data: data.to_vec(),
+        });
+    }
+
     // set spotify ids
     tag.add_frame(id3::frame::ExtendedText {
         description: TAG_SPOTIFY_TRACK_ID.to_string(),
@@ -713,6 +810,28 @@ async fn helper_metadata_to_tag(
     });
 
     Ok(tag)
+}
+
+async fn helper_collect_files(path: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut dirs = VecDeque::new();
+    if path.is_file() {
+        files.push(path.to_path_buf());
+    } else {
+        dirs.push_back(path.to_path_buf());
+    }
+    while let Some(dir) = dirs.pop_front() {
+        let mut readdir = tokio::fs::read_dir(dir).await?;
+        while let Some(entry) = readdir.next_entry().await? {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push_back(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    Ok(files)
 }
 
 async fn helper_scan_track_id_in_file(path: &Path) -> Option<SpotifyId> {
@@ -913,6 +1032,7 @@ async fn main() -> Result<()> {
         SubCmd::Download(args) => subcmd_download(args).await?,
         SubCmd::Scan(args) => subcmd_scan(args).await?,
         SubCmd::Sync(args) => subcmd_sync(args).await?,
+        SubCmd::Update(args) => subcmd_update(args).await?,
     };
 
     Ok(())
