@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.71"
-clap = { version = "4.3.3", features = ["derive", "env"] }
+clap = { version = "4.3.8", features = ["derive", "env"] }
 id3 = { version = "1.7.0", features = ["tokio"] }
 indicatif = "0.17.5"
 inquire = "0.6.2"
