@@ -1,0 +1,27 @@
+name: Rust Nightly Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up nightly Rust
+        uses: https://github.com/dtolnay/rust-toolchain@nightly
+
+      - name: Install dependencies
+        run: cargo build --locked --all-features
+
+      - name: Run tests
+        run: cargo test --locked --all-features
