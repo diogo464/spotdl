@@ -120,7 +120,7 @@ pub fn parse_uri(uri: &str) -> Result<ResourceId> {
     // spotify:album:7I9Wh2IgvI3Nnr8Z1ZSWby
     // spotify:track:4OROzZUy6gOWN4UGQVaZMF
     // spotify:playlist:37i9dQZEVXcL56F37CPtSC
-    if uri.chars().map(|c| c == ':').count() != 2 {
+    if uri.chars().filter(|c| *c == ':').count() != 2 {
         return Err(IdParseError);
     }
 
@@ -133,8 +133,7 @@ pub fn parse_uri(uri: &str) -> Result<ResourceId> {
         .ok_or(IdParseError)?;
     let rem = &uri[idx..];
     let id_start = rem.find(":").map(|i| i + 1).ok_or(IdParseError)?;
-    let id_end = rem[id_start..].find(":").unwrap_or(rem.len() - id_start);
-    let id = &rem[id_start..id_start + id_end];
+    let id = &rem[id_start..];
     let id = librespot::core::SpotifyId::from_base62(id)
         .map_err(|_| IdParseError)?
         .id;

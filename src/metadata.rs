@@ -1,10 +1,14 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use librespot::metadata::Metadata;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::Mutex;
 
-use crate::{session::Session, Resource, ResourceId, SpotifyId};
+use crate::{
+    session::{Session, SessionError},
+    Credentials, Resource, ResourceId, SpotifyId,
+};
 
 mod null;
 pub use null::NullMetadataCache;
@@ -18,6 +22,12 @@ pub struct MetadataError(Box<dyn std::error::Error + Send + Sync + 'static>);
 
 impl From<librespot::core::Error> for MetadataError {
     fn from(value: librespot::core::Error) -> Self {
+        Self(Box::new(value))
+    }
+}
+
+impl From<SessionError> for MetadataError {
+    fn from(value: SessionError) -> Self {
         Self(Box::new(value))
     }
 }
@@ -79,9 +89,15 @@ pub struct SyncedLine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Lyrics {
+pub enum LyricsKind {
     Unsynchronized(Vec<String>),
     Synchronized(Vec<SyncedLine>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lyrics {
+    pub language: String,
+    pub kind: LyricsKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,20 +107,38 @@ pub struct Playlist {
     pub tracks: Vec<ResourceId>,
 }
 
-pub struct MetadataFetcher {
-    cache: Box<dyn MetadataCache>,
-    session: Session,
+enum FetcherSession {
+    Ready(Session),
+    Delayed(Credentials),
 }
+
+struct MetadataFetcherInner {
+    cache: Box<dyn MetadataCache>,
+    session: Mutex<FetcherSession>,
+}
+
+#[derive(Clone)]
+pub struct MetadataFetcher(Arc<MetadataFetcherInner>);
 
 impl MetadataFetcher {
     pub fn new<C>(session: Session, cache: C) -> Self
     where
         C: MetadataCache,
     {
-        Self {
+        Self(Arc::new(MetadataFetcherInner {
             cache: Box::new(cache),
-            session,
-        }
+            session: Mutex::new(FetcherSession::Ready(session)),
+        }))
+    }
+
+    pub fn delayed<C>(credentials: Credentials, cache: C) -> Self
+    where
+        C: MetadataCache,
+    {
+        Self(Arc::new(MetadataFetcherInner {
+            cache: Box::new(cache),
+            session: Mutex::new(FetcherSession::Delayed(credentials)),
+        }))
     }
 
     pub async fn get_artist(&self, id: SpotifyId) -> Result<Artist> {
@@ -213,10 +247,11 @@ impl MetadataFetcher {
         let lyrics = if track.has_lyrics {
             let lyrics = self.get_librespot_lyrics(id).await?;
             let inner = lyrics.lyrics;
-            match inner.sync_type {
+            let kind = match inner.sync_type {
                 librespot::metadata::lyrics::SyncType::Unsynced => {
                     let lines = inner.lines.into_iter().map(|l| l.words).collect::<Vec<_>>();
-                    Some(Lyrics::Unsynchronized(lines))
+                    let kind = LyricsKind::Unsynchronized(lines);
+                    kind
                 }
                 librespot::metadata::lyrics::SyncType::LineSynced => {
                     let lines = inner
@@ -228,9 +263,14 @@ impl MetadataFetcher {
                             text: l.words,
                         })
                         .collect::<Vec<_>>();
-                    Some(Lyrics::Synchronized(lines))
+                    let kind = LyricsKind::Synchronized(lines);
+                    kind
                 }
-            }
+            };
+            Some(Lyrics {
+                language: inner.language,
+                kind,
+            })
         } else {
             None
         };
@@ -281,7 +321,8 @@ impl MetadataFetcher {
     async fn get_librespot_artist(&self, id: SpotifyId) -> Result<librespot::metadata::Artist> {
         tracing::debug!("fetching librespot artist {}", id);
         let lsid = ResourceId::new(Resource::Artist, id).to_librespot();
-        let artist = librespot::metadata::Artist::get(&self.session.librespot(), &lsid).await?;
+        let session = self.session().await?;
+        let artist = librespot::metadata::Artist::get(session.librespot(), &lsid).await?;
         tracing::debug!("fetched librespot artist {}", id);
         Ok(artist)
     }
@@ -289,7 +330,8 @@ impl MetadataFetcher {
     async fn get_librespot_album(&self, id: SpotifyId) -> Result<librespot::metadata::Album> {
         tracing::debug!("fetching librespot album {}", id);
         let lsid = ResourceId::new(Resource::Album, id).to_librespot();
-        let album = librespot::metadata::Album::get(&self.session.librespot(), &lsid).await?;
+        let session = self.session().await?;
+        let album = librespot::metadata::Album::get(session.librespot(), &lsid).await?;
         tracing::debug!("fetched librespot album {}", id);
         Ok(album)
     }
@@ -297,7 +339,8 @@ impl MetadataFetcher {
     async fn get_librespot_track(&self, id: SpotifyId) -> Result<librespot::metadata::Track> {
         tracing::debug!("fetching librespot track {}", id);
         let lsid = ResourceId::new(Resource::Track, id).to_librespot();
-        let track = librespot::metadata::Track::get(&self.session.librespot(), &lsid).await?;
+        let session = self.session().await?;
+        let track = librespot::metadata::Track::get(session.librespot(), &lsid).await?;
         tracing::debug!("fetched librespot track {}", id);
         Ok(track)
     }
@@ -305,7 +348,8 @@ impl MetadataFetcher {
     async fn get_librespot_playlist(&self, id: SpotifyId) -> Result<librespot::metadata::Playlist> {
         tracing::debug!("fetching librespot playlist {}", id);
         let lsid = ResourceId::new(Resource::Playlist, id).to_librespot();
-        let playlist = librespot::metadata::Playlist::get(&self.session.librespot(), &lsid).await?;
+        let session = self.session().await?;
+        let playlist = librespot::metadata::Playlist::get(session.librespot(), &lsid).await?;
         tracing::debug!("fetched librespot playlist {}", id);
         Ok(playlist)
     }
@@ -313,9 +357,22 @@ impl MetadataFetcher {
     async fn get_librespot_lyrics(&self, id: SpotifyId) -> Result<librespot::metadata::Lyrics> {
         tracing::debug!("fetching librespot lyrics {}", id);
         let lsid = ResourceId::new(Resource::Track, id).to_librespot();
-        let lyrics = librespot::metadata::Lyrics::get(&self.session.librespot(), &lsid).await?;
+        let session = self.session().await?;
+        let lyrics = librespot::metadata::Lyrics::get(session.librespot(), &lsid).await?;
         tracing::debug!("fetched librespot lyrics {}", id);
         Ok(lyrics)
+    }
+
+    async fn session(&self) -> Result<Session> {
+        let mut fsession = self.0.session.lock().await;
+        match &*fsession {
+            FetcherSession::Ready(s) => Ok(s.clone()),
+            FetcherSession::Delayed(c) => {
+                let s = Session::connect(c.clone()).await?;
+                *fsession = FetcherSession::Ready(s.clone());
+                Ok(s)
+            }
+        }
     }
 
     fn cache_load<T>(&self, key: ResourceId) -> Option<T>
@@ -324,9 +381,12 @@ impl MetadataFetcher {
     {
         tracing::debug!("loading metadata from cache: {}", key);
         let key = key.to_string();
-        let data = match self.cache.load(&key) {
+        let data = match self.0.cache.load(&key) {
             Ok(Some(data)) => data,
-            Ok(None) => return None,
+            Ok(None) => {
+                tracing::debug!("no metadata in cache: {}", key);
+                return None;
+            }
             Err(e) => {
                 tracing::error!("Failed to load metadata from cache: {}", e);
                 return None;
@@ -357,6 +417,7 @@ impl MetadataFetcher {
 
         // TODO: customize cache ttl
         if let Err(err) = self
+            .0
             .cache
             .store(&key, &data, Duration::from_secs(60 * 60 * 4))
         {
