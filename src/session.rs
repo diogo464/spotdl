@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -23,7 +21,6 @@ pub struct Credentials(librespot::discovery::Credentials);
 #[derive(Clone)]
 pub struct Session {
     session: librespot::core::Session,
-    cache_dir: Arc<tempfile::TempDir>,
 }
 
 impl std::fmt::Debug for Session {
@@ -34,24 +31,12 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     pub async fn connect(credentials: Credentials) -> Result<Session, SessionError> {
-        let tempdir = tempfile::TempDir::new().map_err(|err| {
-            tracing::error!("failed to create tempdir: {}", err);
-            SessionError(Box::new(err))
-        })?;
-        let cache = librespot::core::cache::Cache::new(Some(tempdir.path()), None, None, None)
-            .map_err(|err| {
-                tracing::error!("failed to create cache: {}", err);
-                SessionError(Box::new(err))
-            })?;
-        let session = librespot::core::Session::new(Default::default(), Some(cache));
+        let session = librespot::core::Session::new(Default::default(), None);
         session
             .connect(credentials.0, false)
             .await
             .map_err(|err| SessionError(Box::new(err)))?;
-        Ok(Session {
-            session,
-            cache_dir: Arc::new(tempdir),
-        })
+        Ok(Session { session })
     }
 
     pub(crate) fn librespot(&self) -> &librespot::core::Session {
