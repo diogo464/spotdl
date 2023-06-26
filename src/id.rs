@@ -55,12 +55,8 @@ pub struct ResourceId {
 
 impl std::fmt::Display for ResourceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let id = librespot::core::SpotifyId {
-            id: self.id.0,
-            item_type: From::from(""),
-        };
-        let ids = id.to_base62().map_err(|_| std::fmt::Error)?;
-        write!(f, "spotify:{}:{}", self.resource, ids)
+        let uri = self.to_uri();
+        write!(f, "{}", uri)
     }
 }
 
@@ -73,6 +69,19 @@ impl From<(Resource, SpotifyId)> for ResourceId {
 impl ResourceId {
     pub fn new(resource: Resource, id: SpotifyId) -> Self {
         Self { resource, id }
+    }
+
+    pub fn from_uri(uri: &str) -> Result<Self> {
+        parse_uri(uri)
+    }
+
+    pub fn to_uri(&self) -> String {
+        let id = librespot::core::SpotifyId {
+            id: self.id.0,
+            item_type: From::from(""),
+        };
+        let ids = id.to_base62().map_err(|_| std::fmt::Error).unwrap();
+        format!("spotify:{}:{}", self.resource, ids)
     }
 
     pub(crate) fn to_librespot(&self) -> librespot::core::SpotifyId {
