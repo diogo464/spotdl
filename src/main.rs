@@ -30,29 +30,50 @@ struct Args {
 
 #[derive(Debug, Parser)]
 struct GroupCacheDir {
+    /// Cache directory.
+    ///
+    /// This directory will be used to save login credentials and metadata from spotify api
+    /// requests.
     #[clap(long, env = "SPOTDL_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
 struct GroupAuth {
+    /// Spotify username.
+    ///
+    /// If this username is set then its credentials will be used.
     #[clap(long, env = "SPOTDL_USER")]
     username: Option<String>,
+
+    /// Spotify password.
+    ///
+    /// If this password is set then the username must also be set.
+    /// Already existing credentials are ignored.
     #[clap(long, env = "SPOTDL_PASS")]
     password: Option<String>,
 }
 
 #[derive(Debug, Parser)]
 struct GroupManifest {
+    /// Path to the manifest file.
     #[clap(long, env = "SPOTDL_MANIFEST", default_value = "spotdl")]
     manifest: PathBuf,
 }
 
 #[derive(Debug, Parser)]
 struct GroupScanDir {
+    /// Directories to include during scanning.
+    ///
+    /// Scanned directories are searched for audio files containing spotify ids in their tags.
+    /// Any ids found will not be downloaded again.
     #[clap(long, default_value = ".")]
     scan: Vec<PathBuf>,
 
+    /// Directories to exclude during scanning.
+    ///
+    /// Excluded directories take precedence over included directories.
+    /// Any audio file excluded or under an excluded directory is not searched for tags.
     #[clap(long)]
     scan_exclude: Vec<PathBuf>,
 }
@@ -72,9 +93,16 @@ impl GroupScanDir {
 
 #[derive(Debug, Parser)]
 struct GroupFFmpeg {
+    /// The format to convert the audio files to.
+    ///
+    /// This requires ffmpeg to be installed.
     #[clap(long, env = "SPOTDL_FORMAT")]
     format: Option<String>,
 
+    /// Path to ffmpeg.
+    ///
+    /// If this is not set then the default path is used.
+    /// It is only required if a format conversion is required.
     #[clap(long, env = "SPOTDL_FFMPEG_PATH")]
     ffmpeg_path: Option<PathBuf>,
 }
@@ -118,14 +146,17 @@ struct ResourceSelector {
     kind: Option<ResourceKind>,
 
     /// Identifier.
+    ///
     /// This can be a Spotify URI, URL or ID.
     /// Ex:
     ///     - spotify:track:5ujWPN9c4lh8pohnf4iVYK
     ///     - https://open.spotify.com/track/5ujWPN9c4lh8pohnf4iVYK
     ///     - 5ujWPN9c4lh8pohnf4iVYK
+    #[clap(verbatim_doc_comment)]
     id: String,
 }
 
+/// Login to spotify.
 #[derive(Debug, Parser)]
 struct LoginArgs {
     #[clap(flatten)]
@@ -138,6 +169,7 @@ struct LoginArgs {
     password: String,
 }
 
+/// Logout from spotify.
 #[derive(Debug, Parser)]
 struct LogoutArgs {
     #[clap(flatten)]
@@ -146,6 +178,7 @@ struct LogoutArgs {
     username: String,
 }
 
+/// Get information about a resource.
 #[derive(Debug, Parser)]
 struct InfoArgs {
     #[clap(flatten)]
@@ -158,6 +191,12 @@ struct InfoArgs {
     resource: ResourceSelector,
 }
 
+/// Download a resource.
+///
+/// If the resource is an artist, then all tracks from all albums, singles and compilations are
+/// downloaded. This does not included "appears on" albums.
+///
+/// If the resource is a playlist, then all tracks in the playlist are downloaded.
 #[derive(Debug, Parser)]
 struct DownloadArgs {
     #[clap(flatten)]
@@ -172,19 +211,22 @@ struct DownloadArgs {
     #[clap(flatten)]
     group_scan: GroupScanDir,
 
-    #[clap(long)]
-    output_dir: Option<PathBuf>,
+    /// Output directory
+    #[clap(long, default_value = ".")]
+    output_dir: PathBuf,
 
     #[clap(flatten)]
     resource: ResourceSelector,
 }
 
+/// Scan a directory and print all spotify ids found.
 #[derive(Debug, Parser)]
 struct ScanArgs {
     #[clap(default_value = ".")]
     dir: PathBuf,
 }
 
+/// Manifest commands
 #[derive(Debug, Parser)]
 struct SyncArgs {
     #[clap(subcommand)]
@@ -199,6 +241,7 @@ enum SyncAction {
     Download(SyncDownloadArgs),
 }
 
+/// Add a resource to the manifest.
 #[derive(Debug, Parser)]
 struct SyncAddArgs {
     #[clap(flatten)]
@@ -214,6 +257,7 @@ struct SyncAddArgs {
     resource: ResourceSelector,
 }
 
+/// Remove a resource from the manifest.
 #[derive(Debug, Parser)]
 struct SyncRemoveArgs {
     #[clap(flatten)]
@@ -229,12 +273,14 @@ struct SyncRemoveArgs {
     resource: ResourceSelector,
 }
 
+/// List all resources in the manifest.
 #[derive(Debug, Parser)]
 struct SyncListArgs {
     #[clap(flatten)]
     manifest: GroupManifest,
 }
 
+/// Download all resources in the manifest.
 #[derive(Debug, Parser)]
 struct SyncDownloadArgs {
     #[clap(flatten)]
@@ -256,6 +302,7 @@ struct SyncDownloadArgs {
     manifest: GroupManifest,
 }
 
+/// Update metadata for all audio files in a directory.
 #[derive(Debug, Parser)]
 struct UpdateArgs {
     #[clap(flatten)]
@@ -338,7 +385,7 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
         fetcher,
         args.group_ffmpeg,
         args.group_scan,
-        args.output_dir.unwrap_or_else(|| PathBuf::from(".")),
+        args.output_dir,
         vec![rid],
     )
     .await?;

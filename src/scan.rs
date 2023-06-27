@@ -49,7 +49,7 @@ pub async fn scan(dir: impl Into<PathBuf>) -> std::io::Result<Vec<SpotifyId>> {
     scan_with(ScanParams::default().with_include(dir)).await
 }
 
-pub async fn scan_with(params: ScanParams) -> std::io::Result<Vec<SpotifyId>> {
+pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<SpotifyId>> {
     const WORKERS: usize = 128;
 
     struct Work {
@@ -58,6 +58,11 @@ pub async fn scan_with(params: ScanParams) -> std::io::Result<Vec<SpotifyId>> {
     }
 
     tracing::debug!("scanning with params: {:?}", params);
+
+    for path in params.include.iter_mut() {
+        tracing::trace!("canonicalizing path: {}", path.display());
+        *path = path.canonicalize()?;
+    }
 
     let params = Arc::new(params);
     let start_time = Instant::now();
@@ -70,6 +75,14 @@ pub async fn scan_with(params: ScanParams) -> std::io::Result<Vec<SpotifyId>> {
         let itx = itx.clone();
         tokio::spawn(async move {
             while let Ok(Work { path, sender }) = wrx.recv_async().await {
+                let path = match path.canonicalize() {
+                    Ok(path) => path,
+                    Err(err) => {
+                        tracing::warn!("failed to canonicalize path '{}': {}", path.display(), err);
+                        continue;
+                    }
+                };
+
                 if params.should_exclude(&path) {
                     continue;
                 }
