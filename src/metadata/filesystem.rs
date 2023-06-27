@@ -10,6 +10,7 @@ struct CacheItem {
     value: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
 pub struct FsMetadataCache {
     base: PathBuf,
 }
@@ -45,7 +46,7 @@ impl MetadataCache for FsMetadataCache {
     fn load(&self, key: &str) -> std::io::Result<Option<Vec<u8>>> {
         let path = self.base.join(key);
         if !path.is_file() {
-            tracing::debug!("cache miss: {}", key);
+            tracing::trace!("cache miss: {}", key);
             return Ok(None);
         }
         let file = std::fs::File::open(&path)?;
@@ -55,10 +56,10 @@ impl MetadataCache for FsMetadataCache {
             .expect("time went backwards")
             .as_secs();
         if item.expires_at > now_unix {
-            tracing::debug!("cache hit: {}", key);
+            tracing::trace!("cache hit: {}", key);
             Ok(Some(item.value))
         } else {
-            tracing::debug!("cache expired: {}", key);
+            tracing::trace!("cache expired: {}", key);
             std::fs::remove_file(path)?;
             Ok(None)
         }

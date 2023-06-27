@@ -101,6 +101,7 @@ pub async fn download<S>(session: &Session, sink: S, track: SpotifyId) -> std::i
 where
     S: DownloadSink,
 {
+    tracing::debug!("starting download of {}", track);
     let player_config = PlayerConfig {
         bitrate: Bitrate::Bitrate320,
         passthrough: true,

@@ -379,7 +379,7 @@ impl MetadataFetcher {
     where
         T: DeserializeOwned,
     {
-        tracing::debug!("loading metadata from cache: {}", key);
+        tracing::trace!("loading metadata from cache: {}", key);
         let key = key.to_string();
         let data = match self.0.cache.load(&key) {
             Ok(Some(data)) => data,

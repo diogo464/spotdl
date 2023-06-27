@@ -1,24 +1,26 @@
 #![feature(io_error_other)]
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     ffi::OsStr,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
+use indicatif::ProgressStyle;
 use serde::{de::DeserializeOwned, Serialize};
 use spotdl::{
     metadata::{FsMetadataCache, MetadataFetcher},
+    pipeline::{FFmpegStage, OrganizeStage, PipelineBuilder, PipelineEvents, TagStage},
+    scan::ScanParams,
     session::Session,
-    Credentials, LoginCredentials, Resource, ResourceId, SpotifyId,
+    Credentials, LoginCredentials, Resource, ResourceId,
 };
 use tokio::io::AsyncWriteExt;
 
-const TAG_SPOTIFY_TRACK_ID: &str = "SPOTIFY_TRACK_ID";
-const TAG_SPOTIFY_ALBUM_ID: &str = "SPOTIFY_ALBUM_ID";
-const TAG_SPOTIFY_ARTIST_ID: &str = "SPOTIFY_ARTIST_ID";
+// TODO: remove some unwraps
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -27,17 +29,65 @@ struct Args {
 }
 
 #[derive(Debug, Parser)]
-struct EnvCacheDir {
+struct GroupCacheDir {
     #[clap(long, env = "SPOTDL_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
-struct EnvAuth {
+struct GroupAuth {
     #[clap(long, env = "SPOTDL_USER")]
     username: Option<String>,
     #[clap(long, env = "SPOTDL_PASS")]
     password: Option<String>,
+}
+
+#[derive(Debug, Parser)]
+struct GroupManifest {
+    #[clap(long, env = "SPOTDL_MANIFEST", default_value = "spotdl")]
+    manifest: PathBuf,
+}
+
+#[derive(Debug, Parser)]
+struct GroupScanDir {
+    #[clap(long, default_value = ".")]
+    scan: Vec<PathBuf>,
+
+    #[clap(long)]
+    scan_exclude: Vec<PathBuf>,
+}
+
+impl GroupScanDir {
+    fn create_params(&self) -> ScanParams {
+        let mut params = ScanParams::default();
+        for path in self.scan.iter() {
+            params.include(path);
+        }
+        for path in self.scan_exclude.iter() {
+            params.exclude(path);
+        }
+        params
+    }
+}
+
+#[derive(Debug, Parser)]
+struct GroupFFmpeg {
+    #[clap(long, env = "SPOTDL_FORMAT")]
+    format: Option<String>,
+
+    #[clap(long, env = "SPOTDL_FFMPEG_PATH")]
+    ffmpeg_path: Option<PathBuf>,
+}
+
+impl GroupFFmpeg {
+    fn create_stage(&self) -> Option<FFmpegStage> {
+        let format = self.format.clone()?;
+        let ffmpeg_path = self
+            .ffmpeg_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("ffmpeg"));
+        Some(FFmpegStage::new(ffmpeg_path, format))
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -79,7 +129,7 @@ struct ResourceSelector {
 #[derive(Debug, Parser)]
 struct LoginArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     /// Spotify username
     username: String,
@@ -91,7 +141,7 @@ struct LoginArgs {
 #[derive(Debug, Parser)]
 struct LogoutArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     username: String,
 }
@@ -99,10 +149,10 @@ struct LogoutArgs {
 #[derive(Debug, Parser)]
 struct InfoArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     #[clap(flatten)]
-    env_auth: EnvAuth,
+    group_auth: GroupAuth,
 
     #[clap(flatten)]
     resource: ResourceSelector,
@@ -111,19 +161,19 @@ struct InfoArgs {
 #[derive(Debug, Parser)]
 struct DownloadArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     #[clap(flatten)]
-    env_auth: EnvAuth,
+    group_auth: GroupAuth,
+
+    #[clap(flatten)]
+    group_ffmpeg: GroupFFmpeg,
+
+    #[clap(flatten)]
+    group_scan: GroupScanDir,
 
     #[clap(long)]
     output_dir: Option<PathBuf>,
-
-    #[clap(long, env = "SPOTDL_FORMAT")]
-    format: Option<String>,
-
-    #[clap(long, env = "SPOTDL_FFMPEG_PATH")]
-    ffmpeg_path: Option<PathBuf>,
 
     #[clap(flatten)]
     resource: ResourceSelector,
@@ -133,12 +183,6 @@ struct DownloadArgs {
 struct ScanArgs {
     #[clap(default_value = ".")]
     dir: PathBuf,
-}
-
-#[derive(Debug, Parser)]
-struct EnvManifest {
-    #[clap(long, env = "SPOTDL_MANIFEST", default_value = "spotdl")]
-    manifest: PathBuf,
 }
 
 #[derive(Debug, Parser)]
@@ -158,13 +202,13 @@ enum SyncAction {
 #[derive(Debug, Parser)]
 struct SyncAddArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     #[clap(flatten)]
-    env_auth: EnvAuth,
+    group_auth: GroupAuth,
 
     #[clap(flatten)]
-    manifest: EnvManifest,
+    manifest: GroupManifest,
 
     #[clap(flatten)]
     resource: ResourceSelector,
@@ -173,13 +217,13 @@ struct SyncAddArgs {
 #[derive(Debug, Parser)]
 struct SyncRemoveArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     #[clap(flatten)]
-    env_auth: EnvAuth,
+    group_auth: GroupAuth,
 
     #[clap(flatten)]
-    manifest: EnvManifest,
+    manifest: GroupManifest,
 
     #[clap(flatten)]
     resource: ResourceSelector,
@@ -188,43 +232,43 @@ struct SyncRemoveArgs {
 #[derive(Debug, Parser)]
 struct SyncListArgs {
     #[clap(flatten)]
-    manifest: EnvManifest,
+    manifest: GroupManifest,
 }
 
 #[derive(Debug, Parser)]
 struct SyncDownloadArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     #[clap(flatten)]
-    env_auth: EnvAuth,
+    group_auth: GroupAuth,
+
+    #[clap(flatten)]
+    group_scan: GroupScanDir,
+
+    #[clap(flatten)]
+    group_ffmpeg: GroupFFmpeg,
 
     #[clap(long, env = "SPOTDL_SYNC_DIR")]
     output_dir: Option<PathBuf>,
 
-    #[clap(long, env = "SPOTDL_FORMAT")]
-    format: Option<String>,
-
-    #[clap(long, env = "SPOTDL_FFMPEG_PATH")]
-    ffmpeg_path: Option<PathBuf>,
-
     #[clap(flatten)]
-    manifest: EnvManifest,
+    manifest: GroupManifest,
 }
 
 #[derive(Debug, Parser)]
 struct UpdateArgs {
     #[clap(flatten)]
-    env_cache_dir: EnvCacheDir,
+    group_cache: GroupCacheDir,
 
     #[clap(flatten)]
-    env_auth: EnvAuth,
+    group_auth: GroupAuth,
 
     path: PathBuf,
 }
 
 async fn subcmd_login(args: LoginArgs) -> Result<()> {
-    let credentials_dir = helper_get_credentials_dir(&args.env_cache_dir)?;
+    let credentials_dir = helper_get_credentials_dir(&args.group_cache)?;
     let credentials_path = credentials_dir.join(&args.username);
     let login_credentials = LoginCredentials {
         username: args.username,
@@ -241,7 +285,7 @@ async fn subcmd_login(args: LoginArgs) -> Result<()> {
 }
 
 async fn subcmd_logout(args: LogoutArgs) -> Result<()> {
-    let credentials_dir = helper_get_credentials_dir(&args.env_cache_dir)?;
+    let credentials_dir = helper_get_credentials_dir(&args.group_cache)?;
     let credentials_path = credentials_dir.join(args.username);
     if credentials_path.exists() {
         tokio::fs::remove_file(&credentials_path)
@@ -253,8 +297,8 @@ async fn subcmd_logout(args: LogoutArgs) -> Result<()> {
 
 async fn subcmd_info(args: InfoArgs) -> Result<()> {
     let rid = helper_resource_selector_to_id(&args.resource)?;
-    let credentials = helper_get_credentials(&args.env_cache_dir, &args.env_auth).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.env_cache_dir)?);
+    let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
+    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
     let fetcher = MetadataFetcher::delayed(credentials, cache);
 
     let mut output = Vec::new();
@@ -284,25 +328,26 @@ async fn subcmd_info(args: InfoArgs) -> Result<()> {
 
 async fn subcmd_download(args: DownloadArgs) -> Result<()> {
     let rid = helper_resource_selector_to_id(&args.resource)?;
-    let credentials = helper_get_credentials(&args.env_cache_dir, &args.env_auth).await?;
+    let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.env_cache_dir)?);
+    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
     let fetcher = MetadataFetcher::new(session.clone(), cache);
+
     helper_download_rids(
         session,
         fetcher,
-        vec![rid],
+        args.group_ffmpeg,
+        args.group_scan,
         args.output_dir.unwrap_or_else(|| PathBuf::from(".")),
-        args.format,
-        args.ffmpeg_path,
+        vec![rid],
     )
     .await?;
+
     Ok(())
 }
 
 async fn subcmd_scan(args: ScanArgs) -> Result<()> {
-    helper_scan_track_ids_in_dir(&args.dir).await?;
-    for track in helper_scan_track_ids_in_dir(&args.dir).await? {
+    for track in spotdl::scan::scan(&args.dir).await? {
         println!("{}", track);
     }
     Ok(())
@@ -355,9 +400,9 @@ async fn subcmd_sync_add(args: SyncAddArgs) -> Result<()> {
         return Ok(());
     }
 
-    let credentials = helper_get_credentials(&args.env_cache_dir, &args.env_auth).await?;
+    let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.env_cache_dir)?);
+    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
     let fetcher = MetadataFetcher::new(session.clone(), cache);
 
     let description = match rid.resource {
@@ -403,39 +448,41 @@ async fn subcmd_sync_list(args: SyncListArgs) -> Result<()> {
 
 async fn subcmd_sync_download(args: SyncDownloadArgs) -> Result<()> {
     let manifest = helper_read_manifest(&args.manifest.manifest).await?;
-    let credentials = helper_get_credentials(&args.env_cache_dir, &args.env_auth).await?;
+    let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.env_cache_dir)?);
+    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
     let fetcher = MetadataFetcher::new(session.clone(), cache);
     let rids = manifest.entries().map(|entry| entry.resource_id).collect();
+
     helper_download_rids(
         session,
         fetcher,
-        rids,
+        args.group_ffmpeg,
+        args.group_scan,
         args.output_dir.unwrap_or_else(|| PathBuf::from(".")),
-        args.format,
-        args.ffmpeg_path,
+        rids,
     )
     .await?;
+
     Ok(())
 }
 
 async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     let files = helper_collect_files(&args.path).await?;
-    let credentials = helper_get_credentials(&args.env_cache_dir, &args.env_auth).await?;
+    let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.env_cache_dir)?);
+    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
     let fetcher = MetadataFetcher::new(session.clone(), cache);
 
     for file in files {
-        let id = match helper_scan_track_id_in_file(&file).await {
+        let id = match spotdl::scan::scan_file(&file).await {
             Some(id) => id,
             None => continue,
         };
 
         tracing::info!("updating metadata for {}", file.display());
         let track = fetcher.get_track(id).await?;
-        let tags = helper_metadata_to_tag(&fetcher, &track).await?;
+        let tags = spotdl::tag::fetch_metadata_to_tag(track.rid.id, &fetcher).await?;
         if file.extension() == Some(OsStr::new("wav")) {
             tags.write_to_wav_path(&file, id3::Version::Id3v24)
                 .with_context(|| {
@@ -458,202 +505,151 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-type TrackIdSender = tokio::sync::mpsc::Sender<SpotifyId>;
-type TrackIdReceiver = tokio::sync::mpsc::Receiver<SpotifyId>;
-
 async fn helper_download_rids(
     session: Session,
     fetcher: MetadataFetcher,
-    rids: Vec<ResourceId>,
+    ffmpeg: GroupFFmpeg,
+    scan: GroupScanDir,
     output_dir: PathBuf,
-    format: Option<String>,
-    ffmpeg_path: Option<PathBuf>,
+    rids: Vec<ResourceId>,
 ) -> Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::channel(8);
-    let handle = tokio::spawn(helper_download_task(
-        rx,
-        output_dir,
-        fetcher.clone(),
-        session,
-        format,
-        ffmpeg_path,
-    ));
+    const WORKERS: usize = 4;
 
+    let mut builder = PipelineBuilder::default();
+    let excluded = spotdl::scan::scan_with(scan.create_params()).await?;
+    builder
+        .with_workers(WORKERS)
+        .with_excluded_iter(
+            excluded
+                .into_iter()
+                .map(|id| ResourceId::new(Resource::Track, id)),
+        )
+        .with_fetcher(fetcher.clone())
+        .with_session(session)
+        .with_stage(TagStage);
+    if let Some(ffmpeg) = ffmpeg.create_stage() {
+        builder.with_stage(ffmpeg);
+    }
+    builder.with_stage(OrganizeStage::new(output_dir));
+
+    let (input, events) = builder.build();
+    let handle = tokio::spawn(helper_download_rids_progress(events, fetcher, WORKERS));
     for rid in rids {
-        match rid.resource {
-            Resource::Artist => {
-                let artist = fetcher.get_artist(rid.id).await?;
-                let albums = artist.albums.into_iter().chain(artist.singles.into_iter());
-                for album in albums {
-                    let album = fetcher.get_album(album.id).await?;
-                    for disc in album.discs {
-                        for track in disc.tracks {
-                            tx.send(track.id).await?;
-                        }
-                    }
-                }
-            }
-            Resource::Album => {
-                let album = fetcher.get_album(rid.id).await?;
-                for disc in album.discs {
-                    for track in disc.tracks {
-                        tx.send(track.id).await?;
-                    }
-                }
-            }
-            Resource::Track => {
-                tx.send(rid.id).await?;
-            }
-            Resource::Playlist => {
-                let playlist = fetcher.get_playlist(rid.id).await?;
-                for track in playlist.tracks {
-                    tx.send(track.id).await?;
-                }
-            }
-        }
+        input.send(rid).await;
     }
-    drop(tx);
-
+    input.close();
     handle.await??;
-
     Ok(())
 }
 
-async fn helper_download_task(
-    mut rx: TrackIdReceiver,
-    out_dir: PathBuf,
+async fn helper_download_rids_progress(
+    mut events: PipelineEvents,
     fetcher: MetadataFetcher,
-    session: Session,
-    format: Option<String>,
-    ffmpeg_path: Option<PathBuf>,
+    workers: usize,
 ) -> Result<()> {
-    let tempdir = tempfile::tempdir().context("creating temporary directory")?;
-    let known_tracks = helper_scan_track_ids_in_dir(&out_dir).await?;
-    let known_tracks: HashSet<SpotifyId> = HashSet::from_iter(known_tracks.into_iter());
+    let mp = indicatif::MultiProgress::new();
 
-    let ffmpeg_path = match ffmpeg_path {
-        Some(ref path) => path.clone(),
-        None => PathBuf::new().join("ffmpeg"),
-    };
+    // create progress bars
+    let download_pb = indicatif::ProgressBar::new_spinner();
+    let worker_pbs = (0..workers)
+        .map(|_| mp.add(indicatif::ProgressBar::new_spinner()))
+        .collect::<Vec<_>>();
 
-    let mut buffer = Vec::new();
-    while let Some(track) = rx.recv().await {
-        if known_tracks.contains(&track) {
-            tracing::info!("skipping known track {}", track);
-            continue;
-        }
+    // register progress bars
+    mp.add(download_pb.clone());
+    for pb in &worker_pbs {
+        mp.add(pb.clone());
+    }
 
-        let samples = spotdl::download::download_samples(&session, track).await?;
-        let track = fetcher.get_track(track).await?;
-        let album = fetcher.get_album(track.album.id).await?;
-        let artist = fetcher.get_artist(track.artists[0].id).await?;
-        let header = wav::Header::new(
-            wav::WAV_FORMAT_PCM,
-            spotdl::download::NUM_CHANNELS as u16,
-            spotdl::download::SAMPLE_RATE as u32,
-            spotdl::download::BITS_PER_SAMPLE as u16,
-        );
+    download_pb.enable_steady_tick(Duration::from_millis(200));
+    for pb in &worker_pbs {
+        pb.enable_steady_tick(Duration::from_millis(200));
+    }
 
-        tracing::info!(
-            "downloading track {}: {} - {} - {}",
-            track.rid,
-            artist.name,
-            album.name,
-            track.name
-        );
+    // set styles
+    let style = ProgressStyle::with_template(
+        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+    )
+    .unwrap()
+    .progress_chars("##-");
+    download_pb.set_style(style.clone());
+    for pb in &worker_pbs {
+        pb.set_style(style.clone());
+    }
 
-        let (wav_path, final_path) = {
-            let track_path = helper_make_track_path(&artist, &album, &track);
-            let wav_path = tempdir.path().join(&track_path);
-            let final_path = out_dir.join(&track_path);
-            (wav_path, final_path)
-        };
+    let mut track_names = HashMap::new();
+    let mut track_workers = HashMap::new();
+    let mut avail_workers = (0..workers).rev().collect::<Vec<_>>();
 
-        if let Some(wav_parent) = wav_path.parent() {
-            tokio::fs::create_dir_all(wav_parent)
-                .await
-                .context("creating track directory")?;
-        }
+    while let Some(ev) = events.recv().await {
+        match ev {
+            spotdl::pipeline::PipelineEvent::DownloadStarted { track_id } => {
+                let track = fetcher.get_track(track_id).await?;
+                let album = fetcher.get_album(track.album.id).await?;
+                let artist = fetcher.get_artist(track.artists[0].id).await?;
+                let name = format!("{}/{}/{}", artist.name, album.name, track.name);
+                track_names.insert(track_id, name.clone());
 
-        if let Some(final_parent) = final_path.parent() {
-            tokio::fs::create_dir_all(final_parent)
-                .await
-                .context("creating track directory")?;
-        }
-
-        buffer.clear();
-        let mut cursor = std::io::Cursor::new(&mut buffer);
-        wav::write(header, &wav::BitDepth::Sixteen(samples), &mut cursor)
-            .context("writing wav file")?;
-        let mut wav_file = tokio::fs::File::create(&wav_path)
-            .await
-            .with_context(|| format!("creating track file {}", wav_path.display()))?;
-        wav_file
-            .write_all(&buffer)
-            .await
-            .context("writing track file")?;
-
-        let tag = helper_metadata_to_tag(&fetcher, &track)
-            .await
-            .context("getting metadata")?;
-        tag.write_to_wav_path(&wav_path, id3::Version::Id3v24)
-            .context("writing metadata")?;
-
-        if let Some(ref format) = format {
-            let mut ffmpeg = tokio::process::Command::new(&ffmpeg_path);
-            let output = final_path.with_extension(format);
-            ffmpeg
-                .arg("-i")
-                .arg(&wav_path)
-                .arg("-b:a")
-                .arg("320k")
-                .arg("-y")
-                .arg(&output)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
-            let output = ffmpeg.output().await.context("running ffmpeg")?;
-            if !output.status.success() {
-                tracing::error!(
-                    "ffmpeg stdout:\n{}",
-                    String::from_utf8_lossy(&output.stdout)
-                );
-                tracing::error!(
-                    "ffmpeg stderr:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                return Err(anyhow::anyhow!("ffmpeg failed"));
+                let message = format!("Downloading {}", name);
+                download_pb.set_message(message);
+                download_pb.set_length(100);
+                download_pb.set_position(0);
             }
-            tokio::fs::remove_file(wav_path)
-                .await
-                .context("removing wav file")?;
-        } else {
-            tokio::fs::copy(&wav_path, final_path)
-                .await
-                .context("copying wav file")?;
-            tokio::fs::remove_file(&wav_path)
-                .await
-                .context("removing wav file")?;
+            spotdl::pipeline::PipelineEvent::DownloadProgress { progress, .. } => {
+                download_pb.set_position((progress * 100.0) as u64);
+            }
+            spotdl::pipeline::PipelineEvent::DownloadFinished { track_id } => {
+                let name = &track_names[&track_id];
+                let message = format!("Finished downloading {name}");
+
+                download_pb.set_message(message);
+                download_pb.set_position(100);
+
+                let worker = avail_workers.pop().expect("no available workers");
+                track_workers.insert(track_id, worker);
+            }
+            spotdl::pipeline::PipelineEvent::PostProcessStarted {
+                track_id,
+                stage_count,
+            } => {
+                let name = &track_names[&track_id];
+                let message = format!("Post-processing {}", name);
+                let pb = &worker_pbs[track_workers[&track_id]];
+                pb.set_message(message);
+                pb.set_position(0);
+                pb.set_length(stage_count as u64);
+            }
+            spotdl::pipeline::PipelineEvent::PostProcessProgress {
+                track_id,
+                stage,
+                stage_idx,
+                stage_count,
+            } => {
+                let name = &track_names[&track_id];
+                let message = format!("Post-processing ({stage}) {name}");
+                let pb = &worker_pbs[track_workers[&track_id]];
+                pb.set_message(message);
+                pb.set_position(stage_idx as u64 + 1);
+                pb.set_length(stage_count as u64);
+            }
+            spotdl::pipeline::PipelineEvent::PostProcessFailed { track_id } => {
+                let name = &track_names[&track_id];
+                let message = format!("Failed to post-process {name}");
+                let pb = &worker_pbs[track_workers[&track_id]];
+                pb.set_message(message);
+                avail_workers.push(track_workers[&track_id]);
+            }
+            spotdl::pipeline::PipelineEvent::PostProcessFinished { track_id } => {
+                let name = &track_names[&track_id];
+                let message = format!("Finished post-processing {name}");
+                let pb = &worker_pbs[track_workers[&track_id]];
+                pb.set_message(message);
+                avail_workers.push(track_workers[&track_id]);
+            }
         }
     }
 
     Ok(())
-}
-
-fn helper_make_track_path(
-    artist: &spotdl::metadata::Artist,
-    album: &spotdl::metadata::Album,
-    track: &spotdl::metadata::Track,
-) -> PathBuf {
-    let mut track_rel_path = PathBuf::default();
-    let track_path_name = track.name.replace("/", "-");
-    track_rel_path.push(&artist.name);
-    track_rel_path.push(&album.name);
-    if album.discs.len() > 1 {
-        track_rel_path.push(format!("Disc {}", track.disc_number));
-    }
-    track_rel_path.push(format!("{} - {}.wav", track.track_number, track_path_name));
-    track_rel_path
 }
 
 async fn helper_read_manifest(path: &Path) -> Result<Manifest> {
@@ -694,134 +690,6 @@ async fn helper_write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-async fn helper_metadata_to_tag(
-    fetcher: &MetadataFetcher,
-    track: &spotdl::metadata::Track,
-) -> Result<id3::Tag> {
-    use id3::TagLike;
-
-    let mut tag = id3::Tag::new();
-    let album = fetcher.get_album(track.album.id).await?;
-    let artist = fetcher.get_artist(album.artists[0].id).await?;
-
-    // set the track artists
-    {
-        let mut artists = String::new();
-        for artist_id in track.artists.iter() {
-            let artist = fetcher.get_artist(artist_id.id).await?;
-            if !artists.is_empty() {
-                artists.push('\0');
-            }
-            artists.push_str(&artist.name);
-        }
-        tag.set_artist(&artists);
-    }
-
-    // set the album artists
-    {
-        let mut artists = String::new();
-        for artist_id in album.artists.iter() {
-            let artist = fetcher.get_artist(artist_id.id).await?;
-            if !artists.is_empty() {
-                artists.push('\0');
-            }
-            artists.push_str(&artist.name);
-        }
-        tag.set_album_artist(&artists);
-    }
-
-    // set title
-    tag.set_title(&track.name);
-
-    // set duration
-    tag.set_duration(track.duration.as_millis() as u32);
-
-    // set genre
-    {
-        let mut genre = String::new();
-        for g in artist.genres.iter() {
-            if !genre.is_empty() {
-                genre.push('\0');
-            }
-            genre.push_str(g);
-        }
-        tag.set_genre(&genre);
-    }
-
-    // set disc
-    tag.set_disc(track.disc_number as u32);
-    tag.set_total_discs(album.discs.len() as u32);
-
-    // set track number
-    tag.set_track(track.track_number as u32);
-    tag.set_total_tracks(album.discs[track.disc_number as usize - 1].tracks.len() as u32);
-
-    // set lyrics
-    if let Some(ref lyrics) = track.lyrics {
-        match &lyrics.kind {
-            spotdl::metadata::LyricsKind::Unsynchronized(lines) => {
-                let combined = lines.join("\n");
-                tag.add_frame(id3::frame::Lyrics {
-                    lang: lyrics.language.clone(),
-                    description: String::default(),
-                    text: combined,
-                });
-            }
-            spotdl::metadata::LyricsKind::Synchronized(lines) => {
-                let mut content = Vec::new();
-                for line in lines {
-                    content.push((line.start_time.as_millis() as u32, line.text.clone()));
-                }
-                let synced = id3::frame::SynchronisedLyrics {
-                    lang: lyrics.language.clone(),
-                    timestamp_format: id3::frame::TimestampFormat::Ms,
-                    content_type: id3::frame::SynchronisedLyricsType::Lyrics,
-                    description: String::default(),
-                    content,
-                };
-                tag.add_frame(synced);
-            }
-        }
-    }
-
-    // add cover image
-    if let Some(cover) = album.cover {
-        let response = reqwest::get(&cover)
-            .await
-            .context("downloading cover image")?;
-        let mimetype = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .to_owned();
-        let data = response.bytes().await.context("reading cover image")?;
-
-        tag.add_frame(id3::frame::Picture {
-            mime_type: mimetype.to_owned(),
-            picture_type: id3::frame::PictureType::CoverFront,
-            description: String::default(),
-            data: data.to_vec(),
-        });
-    }
-
-    // set spotify ids
-    tag.add_frame(id3::frame::ExtendedText {
-        description: TAG_SPOTIFY_TRACK_ID.to_string(),
-        value: track.rid.id.to_string(),
-    });
-    tag.add_frame(id3::frame::ExtendedText {
-        description: TAG_SPOTIFY_ALBUM_ID.to_string(),
-        value: album.rid.id.to_string(),
-    });
-    tag.add_frame(id3::frame::ExtendedText {
-        description: TAG_SPOTIFY_ARTIST_ID.to_string(),
-        value: artist.rid.id.to_string(),
-    });
-
-    Ok(tag)
-}
-
 async fn helper_collect_files(path: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut dirs = VecDeque::new();
@@ -844,89 +712,6 @@ async fn helper_collect_files(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-async fn helper_scan_track_id_in_file(path: &Path) -> Option<SpotifyId> {
-    const EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a"];
-
-    let ext = path.extension().and_then(|ext| ext.to_str())?;
-    if !EXTENSIONS.contains(&ext) {
-        tracing::debug!(
-            "skipping file '{}' because it has an unknown extension",
-            path.display()
-        );
-        return None;
-    }
-
-    let tag_result = if ext == "wav" {
-        id3::Tag::read_from_wav_path(path)
-    } else {
-        id3::Tag::read_from_path(path)
-    };
-
-    let tag = match tag_result {
-        Ok(tag) => tag,
-        Err(err) => {
-            tracing::warn!(
-                "failed to read id3 tag from file '{}': {}",
-                path.display(),
-                err
-            );
-            return None;
-        }
-    };
-
-    for extended in tag.extended_texts() {
-        if extended.description == TAG_SPOTIFY_TRACK_ID {
-            if extended.value.len() < 22 {
-                tracing::warn!(
-                    "spotify id '{}' in file '{}' is too short",
-                    extended.value,
-                    path.display()
-                );
-                continue;
-            }
-
-            // the spotify id is always 22 bytes long
-            // extended.value can sometimes include a null terminator so remove that.
-            let value = &extended.value[..22];
-
-            match spotdl::id::parse_id(value) {
-                Ok(id) => {
-                    tracing::debug!("found spotify id '{}' in file '{}'", id, path.display());
-                    return Some(id);
-                }
-                Err(err) => {
-                    tracing::warn!("failed to parse spotify id '{}': {}", value, err);
-                }
-            }
-        }
-    }
-    tracing::debug!(
-        "skipping file '{}' because it has no spotify id",
-        path.display()
-    );
-    None
-}
-
-async fn helper_scan_track_ids_in_dir(dir: &Path) -> Result<Vec<SpotifyId>> {
-    let mut ids = Vec::new();
-    let mut dirs = Vec::new();
-    dirs.push(dir.to_path_buf());
-    while let Some(dir) = dirs.pop() {
-        let mut readdir = tokio::fs::read_dir(dir)
-            .await
-            .context("reading directory")?;
-        while let Some(entry) = readdir.next_entry().await? {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else if let Some(id) = helper_scan_track_id_in_file(&path).await {
-                ids.push(id);
-            }
-        }
-    }
-    Ok(ids)
-}
-
 fn helper_resource_selector_to_id(selector: &ResourceSelector) -> Result<ResourceId> {
     let kind = match selector.kind {
         Some(ResourceKind::Artist) => Some(Resource::Artist),
@@ -938,7 +723,7 @@ fn helper_resource_selector_to_id(selector: &ResourceSelector) -> Result<Resourc
     spotdl::id::parse(&selector.id, kind).context("parsing resource id")
 }
 
-fn helper_get_cache_dir(dir: &EnvCacheDir) -> Result<PathBuf> {
+fn helper_get_cache_dir(dir: &GroupCacheDir) -> Result<PathBuf> {
     match dir.cache_dir {
         Some(ref dir) => Ok(dir.clone()),
         None => {
@@ -949,17 +734,17 @@ fn helper_get_cache_dir(dir: &EnvCacheDir) -> Result<PathBuf> {
     }
 }
 
-fn helper_get_credentials_dir(dir: &EnvCacheDir) -> Result<PathBuf> {
+fn helper_get_credentials_dir(dir: &GroupCacheDir) -> Result<PathBuf> {
     let cache_dir = helper_get_cache_dir(dir)?;
     Ok(cache_dir.join("credentials"))
 }
 
-fn helper_get_metadata_dir(dir: &EnvCacheDir) -> Result<PathBuf> {
+fn helper_get_metadata_dir(dir: &GroupCacheDir) -> Result<PathBuf> {
     let cache_dir = helper_get_cache_dir(dir)?;
     Ok(cache_dir.join("metadata"))
 }
 
-async fn helper_get_credentials(dir: &EnvCacheDir, auth: &EnvAuth) -> Result<Credentials> {
+async fn helper_get_credentials(dir: &GroupCacheDir, auth: &GroupAuth) -> Result<Credentials> {
     let credentials_dir = helper_get_credentials_dir(dir)?;
     tokio::fs::create_dir_all(&credentials_dir)
         .await
