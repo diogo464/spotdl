@@ -44,6 +44,11 @@ pub async fn fetch_metadata_to_tag(
         tag.set_album_artist(&artists);
     }
 
+    // set album
+    {
+        tag.set_album(album.name);
+    }
+
     // set title
     tag.set_title(&track.name);
 
