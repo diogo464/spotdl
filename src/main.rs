@@ -656,104 +656,109 @@ async fn helper_download_rids_progress(
     fetcher: MetadataFetcher,
     workers: usize,
 ) -> Result<()> {
-    let mp = indicatif::MultiProgress::new();
+    let disable_progress = std::env::var_os("SPOTDL_DISABLE_PROGRESS").is_some();
+    if disable_progress {
+        while let Some(_) = events.recv().await {}
+    } else {
+        let mp = indicatif::MultiProgress::new();
 
-    // create progress bars
-    let download_pb = indicatif::ProgressBar::new_spinner();
-    let worker_pbs = (0..workers)
-        .map(|_| mp.add(indicatif::ProgressBar::new_spinner()))
-        .collect::<Vec<_>>();
+        // create progress bars
+        let download_pb = indicatif::ProgressBar::new_spinner();
+        let worker_pbs = (0..workers)
+            .map(|_| mp.add(indicatif::ProgressBar::new_spinner()))
+            .collect::<Vec<_>>();
 
-    // register progress bars
-    mp.add(download_pb.clone());
-    for pb in &worker_pbs {
-        mp.add(pb.clone());
-    }
+        // register progress bars
+        mp.add(download_pb.clone());
+        for pb in &worker_pbs {
+            mp.add(pb.clone());
+        }
 
-    download_pb.enable_steady_tick(Duration::from_millis(200));
-    for pb in &worker_pbs {
-        pb.enable_steady_tick(Duration::from_millis(200));
-    }
+        download_pb.enable_steady_tick(Duration::from_millis(200));
+        for pb in &worker_pbs {
+            pb.enable_steady_tick(Duration::from_millis(200));
+        }
 
-    // set styles
-    let style = ProgressStyle::with_template(
-        "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
-    )
-    .unwrap()
-    .progress_chars("##-");
-    download_pb.set_style(style.clone());
-    for pb in &worker_pbs {
-        pb.set_style(style.clone());
-    }
+        // set styles
+        let style = ProgressStyle::with_template(
+            "[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}",
+        )
+        .unwrap()
+        .progress_chars("##-");
+        download_pb.set_style(style.clone());
+        for pb in &worker_pbs {
+            pb.set_style(style.clone());
+        }
 
-    let mut track_names = HashMap::new();
-    let mut track_workers = HashMap::new();
-    let mut avail_workers = (0..workers).rev().collect::<Vec<_>>();
+        let mut track_names = HashMap::new();
+        let mut track_workers = HashMap::new();
+        let mut avail_workers = (0..workers).rev().collect::<Vec<_>>();
 
-    while let Some(ev) = events.recv().await {
-        match ev {
-            spotdl::pipeline::PipelineEvent::DownloadStarted { track_id } => {
-                let track = fetcher.get_track(track_id).await?;
-                let album = fetcher.get_album(track.album.id).await?;
-                let artist = fetcher.get_artist(track.artists[0].id).await?;
-                let name = format!("{}/{}/{}", artist.name, album.name, track.name);
-                track_names.insert(track_id, name.clone());
+        while let Some(ev) = events.recv().await {
+            match ev {
+                spotdl::pipeline::PipelineEvent::DownloadStarted { track_id } => {
+                    let track = fetcher.get_track(track_id).await?;
+                    let album = fetcher.get_album(track.album.id).await?;
+                    let artist = fetcher.get_artist(track.artists[0].id).await?;
+                    let name = format!("{}/{}/{}", artist.name, album.name, track.name);
+                    track_names.insert(track_id, name.clone());
 
-                let message = format!("Downloading {}", name);
-                download_pb.set_message(message);
-                download_pb.set_length(100);
-                download_pb.set_position(0);
-            }
-            spotdl::pipeline::PipelineEvent::DownloadProgress { progress, .. } => {
-                download_pb.set_position((progress * 100.0) as u64);
-            }
-            spotdl::pipeline::PipelineEvent::DownloadFinished { track_id } => {
-                let name = &track_names[&track_id];
-                let message = format!("Finished downloading {name}");
+                    let message = format!("Downloading {}", name);
+                    download_pb.set_message(message);
+                    download_pb.set_length(100);
+                    download_pb.set_position(0);
+                }
+                spotdl::pipeline::PipelineEvent::DownloadProgress { progress, .. } => {
+                    download_pb.set_position((progress * 100.0) as u64);
+                }
+                spotdl::pipeline::PipelineEvent::DownloadFinished { track_id } => {
+                    let name = &track_names[&track_id];
+                    let message = format!("Finished downloading {name}");
 
-                download_pb.set_message(message);
-                download_pb.set_position(100);
+                    download_pb.set_message(message);
+                    download_pb.set_position(100);
 
-                let worker = avail_workers.pop().expect("no available workers");
-                track_workers.insert(track_id, worker);
-            }
-            spotdl::pipeline::PipelineEvent::PostProcessStarted {
-                track_id,
-                stage_count,
-            } => {
-                let name = &track_names[&track_id];
-                let message = format!("Post-processing {}", name);
-                let pb = &worker_pbs[track_workers[&track_id]];
-                pb.set_message(message);
-                pb.set_position(0);
-                pb.set_length(stage_count as u64);
-            }
-            spotdl::pipeline::PipelineEvent::PostProcessProgress {
-                track_id,
-                stage,
-                stage_idx,
-                stage_count,
-            } => {
-                let name = &track_names[&track_id];
-                let message = format!("Post-processing ({stage}) {name}");
-                let pb = &worker_pbs[track_workers[&track_id]];
-                pb.set_message(message);
-                pb.set_position(stage_idx as u64 + 1);
-                pb.set_length(stage_count as u64);
-            }
-            spotdl::pipeline::PipelineEvent::PostProcessFailed { track_id } => {
-                let name = &track_names[&track_id];
-                let message = format!("Failed to post-process {name}");
-                let pb = &worker_pbs[track_workers[&track_id]];
-                pb.set_message(message);
-                avail_workers.push(track_workers[&track_id]);
-            }
-            spotdl::pipeline::PipelineEvent::PostProcessFinished { track_id } => {
-                let name = &track_names[&track_id];
-                let message = format!("Finished post-processing {name}");
-                let pb = &worker_pbs[track_workers[&track_id]];
-                pb.set_message(message);
-                avail_workers.push(track_workers[&track_id]);
+                    let worker = avail_workers.pop().expect("no available workers");
+                    track_workers.insert(track_id, worker);
+                }
+                spotdl::pipeline::PipelineEvent::PostProcessStarted {
+                    track_id,
+                    stage_count,
+                } => {
+                    let name = &track_names[&track_id];
+                    let message = format!("Post-processing {}", name);
+                    let pb = &worker_pbs[track_workers[&track_id]];
+                    pb.set_message(message);
+                    pb.set_position(0);
+                    pb.set_length(stage_count as u64);
+                }
+                spotdl::pipeline::PipelineEvent::PostProcessProgress {
+                    track_id,
+                    stage,
+                    stage_idx,
+                    stage_count,
+                } => {
+                    let name = &track_names[&track_id];
+                    let message = format!("Post-processing ({stage}) {name}");
+                    let pb = &worker_pbs[track_workers[&track_id]];
+                    pb.set_message(message);
+                    pb.set_position(stage_idx as u64 + 1);
+                    pb.set_length(stage_count as u64);
+                }
+                spotdl::pipeline::PipelineEvent::PostProcessFailed { track_id } => {
+                    let name = &track_names[&track_id];
+                    let message = format!("Failed to post-process {name}");
+                    let pb = &worker_pbs[track_workers[&track_id]];
+                    pb.set_message(message);
+                    avail_workers.push(track_workers[&track_id]);
+                }
+                spotdl::pipeline::PipelineEvent::PostProcessFinished { track_id } => {
+                    let name = &track_names[&track_id];
+                    let message = format!("Finished post-processing {name}");
+                    let pb = &worker_pbs[track_workers[&track_id]];
+                    pb.set_message(message);
+                    avail_workers.push(track_workers[&track_id]);
+                }
             }
         }
     }
