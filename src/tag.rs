@@ -7,13 +7,53 @@ pub const TAG_SPOTIFY_TRACK_ID: &str = "spotify_track_id";
 pub const TAG_SPOTIFY_ALBUM_ID: &str = "spotify_album_id";
 pub const TAG_SPOTIFY_ARTIST_ID: &str = "spotify_artist_id";
 
+#[derive(Debug, Clone)]
+pub struct FetchMetadataParams {
+    pub download_images: bool,
+}
+
+impl Default for FetchMetadataParams {
+    fn default() -> Self {
+        Self {
+            download_images: true,
+        }
+    }
+}
+
 pub async fn fetch_metadata_to_tag(
     track_id: SpotifyId,
     fetcher: &MetadataFetcher,
 ) -> anyhow::Result<id3::Tag> {
+    fetch_metadata_to_tag_with(track_id, fetcher, &FetchMetadataParams::default()).await
+}
+
+pub async fn fetch_metadata_to_tag_with(
+    track_id: SpotifyId,
+    fetcher: &MetadataFetcher,
+    params: &FetchMetadataParams,
+) -> anyhow::Result<id3::Tag> {
+    let mut tag = id3::Tag::new();
+    fetch_metadata_to_existing_tag_with(&mut tag, track_id, fetcher, params).await?;
+    Ok(tag)
+}
+
+pub async fn fetch_metadata_to_existing_tag(
+    tag: &mut id3::Tag,
+    track_id: SpotifyId,
+    fetcher: &MetadataFetcher,
+) -> anyhow::Result<()> {
+    fetch_metadata_to_existing_tag_with(tag, track_id, fetcher, &FetchMetadataParams::default())
+        .await
+}
+
+pub async fn fetch_metadata_to_existing_tag_with(
+    tag: &mut id3::Tag,
+    track_id: SpotifyId,
+    fetcher: &MetadataFetcher,
+    params: &FetchMetadataParams,
+) -> anyhow::Result<()> {
     use id3::TagLike;
 
-    let mut tag = id3::Tag::new();
     let track = fetcher.get_track(track_id).await?;
     let album = fetcher.get_album(track.album.id).await?;
     let artist = fetcher.get_artist(album.artists[0].id).await?;
@@ -104,7 +144,7 @@ pub async fn fetch_metadata_to_tag(
     }
 
     // add cover image
-    if let Some(cover) = album.cover {
+    if let Some(cover) = album.cover && params.download_images {
         let response = reqwest::get(&cover).await?;
         let mimetype = response
             .headers()
@@ -136,5 +176,5 @@ pub async fn fetch_metadata_to_tag(
         value: artist.rid.id.to_string(),
     });
 
-    Ok(tag)
+    Ok(())
 }

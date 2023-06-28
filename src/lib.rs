@@ -1,6 +1,7 @@
 #![feature(io_error_other)]
 #![feature(io_error_more)]
 #![feature(try_blocks)]
+#![feature(let_chains)]
 
 pub mod id;
 pub use id::{Resource, ResourceId, SpotifyId};

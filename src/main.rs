@@ -1,4 +1,5 @@
 #![feature(io_error_other)]
+#![feature(try_blocks)]
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -311,6 +312,19 @@ struct UpdateArgs {
     #[clap(flatten)]
     group_auth: GroupAuth,
 
+    /// Number of workers to use.
+    #[clap(long, default_value = "4")]
+    workers: usize,
+
+    /// Replace existing metadata.
+    #[clap(long)]
+    replace: bool,
+
+    /// Don't download images.
+    #[clap(long)]
+    no_images: bool,
+
+    /// Directory to scan for files to update.
     path: PathBuf,
 }
 
@@ -521,32 +535,77 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
     let fetcher = MetadataFetcher::new(session.clone(), cache);
 
-    for file in files {
-        let id = match spotdl::scan::scan_file(&file).await {
-            Some(id) => id,
-            None => continue,
-        };
+    let (tx, rx) = flume::bounded::<PathBuf>(args.workers);
+    let mut handles = Vec::new();
 
-        tracing::info!("updating metadata for {}", file.display());
-        let track = fetcher.get_track(id).await?;
-        let tags = spotdl::tag::fetch_metadata_to_tag(track.rid.id, &fetcher).await?;
-        if file.extension() == Some(OsStr::new("wav")) {
-            tags.write_to_wav_path(&file, id3::Version::Id3v24)
-                .with_context(|| {
-                    format!(
-                        "failed to write metadata to file: {}",
-                        file.to_string_lossy()
+    let fetch_metadata_params = spotdl::tag::FetchMetadataParams {
+        download_images: !args.no_images,
+    };
+
+    for _ in 0..args.workers {
+        let rx = rx.clone();
+        let fetcher = fetcher.clone();
+        let fetch_metadata_params = fetch_metadata_params.clone();
+        let replace = args.replace;
+        let handle = tokio::spawn(async move {
+            while let Ok(file) = rx.recv_async().await {
+                let update_result: Result<()> = try {
+                    let id = match spotdl::scan::scan_file(&file).await {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                    tracing::info!("updating metadata for {}", file.display());
+                    let track = fetcher.get_track(id).await?;
+                    let mut tag = if replace {
+                        Default::default()
+                    } else {
+                        id3::Tag::read_from_path(&file).unwrap_or_default()
+                    };
+                    spotdl::tag::fetch_metadata_to_existing_tag_with(
+                        &mut tag,
+                        track.rid.id,
+                        &fetcher,
+                        &fetch_metadata_params,
                     )
-                })?;
-        } else {
-            tags.write_to_path(&file, id3::Version::Id3v24)
-                .with_context(|| {
-                    format!(
-                        "failed to write metadata to file: {}",
-                        file.to_string_lossy()
-                    )
-                })?;
-        }
+                    .await?;
+                    if file.extension() == Some(OsStr::new("wav")) {
+                        tag.write_to_wav_path(&file, id3::Version::Id3v24)
+                            .with_context(|| {
+                                format!(
+                                    "failed to write metadata to file: {}",
+                                    file.to_string_lossy()
+                                )
+                            })?;
+                    } else {
+                        tag.write_to_path(&file, id3::Version::Id3v24)
+                            .with_context(|| {
+                                format!(
+                                    "failed to write metadata to file: {}",
+                                    file.to_string_lossy()
+                                )
+                            })?;
+                    }
+                };
+
+                match update_result {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::error!("failed to update metadata for {}: {}", file.display(), e);
+                    }
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    for file in files {
+        tx.send_async(file).await?;
+    }
+    drop(tx);
+
+    for handle in handles {
+        handle.await?;
     }
 
     Ok(())
