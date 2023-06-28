@@ -622,7 +622,10 @@ async fn helper_download_rids(
     const WORKERS: usize = 4;
 
     let mut builder = PipelineBuilder::default();
+    tracing::info!("scanning for existing files");
+    tracing::debug!("scan params: {:?}", scan.create_params());
     let excluded = spotdl::scan::scan_with(scan.create_params()).await?;
+    tracing::info!("found {} existing tracks", excluded.len());
     builder
         .with_workers(WORKERS)
         .with_excluded_iter(
