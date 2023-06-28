@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.71"
 async-trait = "0.1.68"
-clap = { version = "4.3.8", features = ["derive", "env"] }
+clap = { version = "4.3.9", features = ["derive", "env"] }
 flume = "0.10.14"
 id3 = { version = "1.7.0", features = ["tokio"] }
 indicatif = "0.17.5"
