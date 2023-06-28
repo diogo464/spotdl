@@ -370,9 +370,10 @@ async fn worker_download(
             * download::SAMPLE_RATE as f32
             * download::NUM_CHANNELS as f32) as usize;
         let event_sink = EventSink::new(track_id, total_samples, ev.clone());
-        download::download(&session, event_sink.clone(), track_id)
-            .await
-            .unwrap();
+        if let Err(err) = download::download(&session, event_sink.clone(), track_id).await {
+            tracing::error!("Failed to download track {}: {}", track_id, err);
+            continue;
+        }
         let samples = event_sink.take_buffer();
 
         evs(&ev, PipelineEvent::DownloadFinished { track_id }).await;

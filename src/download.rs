@@ -35,6 +35,14 @@ struct DownloadSinkWrapper<S> {
     sender: Option<ErrSender>,
 }
 
+impl<S> Drop for DownloadSinkWrapper<S> {
+    fn drop(&mut self) {
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(None);
+        }
+    }
+}
+
 impl<S> DownloadSinkWrapper<S> {
     pub fn new(sink: S) -> (Self, ErrReceiver) {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -93,7 +101,11 @@ where
 
     fn stop(&mut self) -> SinkResult<()> {
         let result = self.download_sink.finish();
-        self.handle_result(result)
+        self.handle_result(result)?;
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(None);
+        }
+        Ok(())
     }
 }
 
@@ -114,18 +126,39 @@ where
         Box::new(NoOpVolume),
         move || Box::new(sink),
     );
+    let mut events = player.get_player_event_channel();
     player.load(
         ResourceId::new(Resource::Track, track).to_librespot(),
         true,
         0,
     );
-    tokio::select! {
-        rx = rx => {
-            let err = rx.unwrap().unwrap();
-            return Err(err);
+
+    while let Some(ev) = events.recv().await {
+        match ev {
+            librespot::playback::player::PlayerEvent::EndOfTrack { .. } => {
+                tracing::debug!("end of track reached");
+                break;
+            }
+            librespot::playback::player::PlayerEvent::Unavailable { track_id, .. } => {
+                tracing::debug!("track unavailable: {}", track_id);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "track unavailable",
+                ));
+            }
+            _ => {}
         }
-        _ = player.await_end_of_track() => {}
     }
+
+    // we have to drop the player so that it can stop the sink
+    drop(player);
+
+    let err = rx.await.unwrap();
+    if let Some(err) = err {
+        tracing::debug!("sink error during download: {err}");
+        return Err(err);
+    }
+
     Ok(())
 }
 
