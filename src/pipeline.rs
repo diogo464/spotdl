@@ -171,14 +171,16 @@ impl PipelineBuilder {
     pub fn build(self) -> (PipelineInput, PipelineEvents) {
         let (input_tx, input_rx) = tokio::sync::mpsc::channel(128);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
+        let (exclude_tx, exclude_rx) = flume::bounded(128);
         let (download_tx, download_rx) = flume::bounded(0);
         let (postprocess_tx, postprocess_rx) = flume::bounded(0);
 
         if let Some(fetcher) = self.fetcher {
-            tokio::spawn(worker_fetcher(
-                input_rx,
+            tokio::spawn(worker_fetcher(input_rx, fetcher.clone(), exclude_tx));
+            tokio::spawn(worker_exclude(
+                exclude_rx,
+                download_tx,
                 fetcher.clone(),
-                download_tx.clone(),
                 self.excluded,
             ));
             for session in self.sessions {
@@ -282,7 +284,6 @@ async fn worker_fetcher(
     mut rx: PipelineInputReceiver,
     fetcher: MetadataFetcher,
     tx: PipelineDownloadSender,
-    excluded: HashSet<ResourceId>,
 ) {
     use anyhow::Context;
 
@@ -303,9 +304,6 @@ async fn worker_fetcher(
                             .context("Failed to fetch album")?;
                         for disc in album.discs {
                             for track in disc.tracks {
-                                if excluded.contains(&track) {
-                                    continue;
-                                }
                                 tx.send_async(track.id).await?;
                             }
                         }
@@ -318,17 +316,11 @@ async fn worker_fetcher(
                         .context("Failed to fetch album")?;
                     for disc in album.discs {
                         for track in disc.tracks {
-                            if excluded.contains(&track) {
-                                continue;
-                            }
                             tx.send_async(track.id).await?;
                         }
                     }
                 }
                 Resource::Track => {
-                    if excluded.contains(&rid) {
-                        continue;
-                    }
                     tx.send_async(rid.id).await?;
                 }
                 Resource::Playlist => {
@@ -337,9 +329,6 @@ async fn worker_fetcher(
                         .await
                         .context("Failed to fetch playlist")?;
                     for track in playlist.tracks {
-                        if excluded.contains(&track) {
-                            continue;
-                        }
                         tx.send_async(track.id).await?;
                     }
                 }
@@ -348,6 +337,40 @@ async fn worker_fetcher(
 
         if let Err(e) = process_result {
             tracing::error!("Failed to process resource {}: {}", rid, e);
+        }
+    }
+}
+
+async fn worker_exclude(
+    rx: PipelineDownloadReceiver,
+    tx: PipelineDownloadSender,
+    fetcher: MetadataFetcher,
+    excluded: HashSet<ResourceId>,
+) {
+    // TODO: exclude is a set of ResourceId but we only support excluding tracks right now
+    // this could be moved to the step before
+    while let Ok(track_id) = rx.recv_async().await {
+        let rid = ResourceId::new(Resource::Track, track_id);
+        if !excluded.contains(&rid) {
+            tracing::debug!("worker_exclude: allowing {}", rid);
+            let track = match fetcher.get_track(track_id).await {
+                Ok(track) => track,
+                Err(err) => {
+                    tracing::error!("Failed to fetch track {}: {}", track_id, err);
+                    continue;
+                }
+            };
+            for alternative_id in track.alternatives {
+                if excluded.contains(&alternative_id) {
+                    tracing::debug!(
+                        "worker_exclude: excluding alternative to {} (alternative = {})",
+                        rid,
+                        alternative_id,
+                    );
+                    continue;
+                }
+            }
+            tx.send_async(track_id).await.unwrap();
         }
     }
 }

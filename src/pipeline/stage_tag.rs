@@ -37,6 +37,9 @@ impl PipelineStage for TagStage {
             }
         };
 
+        tracing::debug!("writing tag to {}", artifact.file_path.display());
+        tracing::trace!("tag: {:?}", tag);
+
         if artifact
             .file_path
             .extension()

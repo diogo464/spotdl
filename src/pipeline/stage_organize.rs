@@ -50,6 +50,11 @@ impl PipelineStage for OrganizeStage {
                 tokio::fs::create_dir_all(parent).await?;
             }
 
+            tracing::debug!(
+                "organizing {} to {}",
+                artifact.file_path.display(),
+                output_path.display()
+            );
             match tokio::fs::rename(&artifact.file_path, &output_path).await {
                 Ok(_) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {

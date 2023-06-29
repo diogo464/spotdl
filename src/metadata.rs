@@ -79,6 +79,7 @@ pub struct Track {
     pub duration: Duration,
     pub artists: Vec<ResourceId>,
     pub lyrics: Option<Lyrics>,
+    pub alternatives: Vec<ResourceId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +292,12 @@ impl MetadataFetcher {
             duration: Duration::from_millis(track.duration as u64),
             artists,
             lyrics,
+            alternatives: track
+                .alternatives
+                .0
+                .into_iter()
+                .map(|id| ResourceId::from_librespot_with(Resource::Track, id))
+                .collect(),
         };
         self.cache_store(rid, &track);
         Ok(track)
