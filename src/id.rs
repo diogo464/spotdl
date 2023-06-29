@@ -27,7 +27,7 @@ impl std::fmt::Display for Resource {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SpotifyId(u128);
 
 impl SpotifyId {
@@ -44,6 +44,26 @@ impl std::fmt::Display for SpotifyId {
         };
         let ids = id.to_base62().map_err(|_| std::fmt::Error)?;
         write!(f, "{}", ids)
+    }
+}
+
+impl Serialize for SpotifyId {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for SpotifyId {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let id = String::deserialize(deserializer)?;
+        let id = librespot::core::SpotifyId::from_base62(&id)
+            .map_err(|_| serde::de::Error::custom("invalid Spotify ID"))?;
+        Ok(Self::new(id.id))
     }
 }
 
