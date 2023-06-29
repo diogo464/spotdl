@@ -34,21 +34,44 @@ impl PipelineStage for OrganizeStage {
             let album = fetcher.get_album(track.album.id).await?;
             let artist = fetcher.get_artist(track.artists[0].id).await?;
 
-            let mut output_path = self.output_dir.clone();
-            let track_name = track.name.replace("/", "-");
-            output_path.push(&artist.name);
-            output_path.push(&album.name);
-            if album.discs.len() > 1 {
-                output_path.push(format!("Disc {}", track.disc_number));
-            }
-            output_path.push(format!("{} - {}", track.track_number, track_name));
-            if let Some(ext) = artifact.file_path.extension() {
-                output_path.set_extension(ext);
-            }
+            let output_dir = {
+                let mut output_dir = self.output_dir.clone();
+                output_dir.push(&artist.name);
+                output_dir.push(&album.name);
+                if album.discs.len() > 1 {
+                    output_dir.push(format!("Disc {}", track.disc_number));
+                }
+                output_dir
+            };
+            tokio::fs::create_dir_all(&output_dir).await?;
 
-            if let Some(parent) = output_path.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
+            let output_path = {
+                let track_name = track.name.replace("/", "-");
+
+                let mut output_path = output_dir.clone();
+                output_path.push(format!("{} - {}", track.track_number, track_name));
+                if let Some(ext) = artifact.file_path.extension() {
+                    output_path.set_extension(ext);
+                }
+
+                if output_path.exists() {
+                    tracing::warn!(
+                        "file already exists at {}, renaming...",
+                        output_path.display()
+                    );
+
+                    output_path = output_dir.clone();
+                    output_path.push(format!(
+                        "{} - {} - {}",
+                        track.track_number, track_name, track.rid.id
+                    ));
+                    if let Some(ext) = artifact.file_path.extension() {
+                        output_path.set_extension(ext);
+                    }
+                }
+
+                output_path
+            };
 
             tracing::debug!(
                 "organizing {} to {}",
