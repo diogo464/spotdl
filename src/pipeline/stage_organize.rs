@@ -46,7 +46,7 @@ impl PipelineStage for OrganizeStage {
             tokio::fs::create_dir_all(&output_dir).await?;
 
             let output_path = {
-                let track_name = track.name.replace("/", "-");
+                let track_name = track.name.replace("/", "-").replace(".", "");
 
                 let mut output_path = output_dir.clone();
                 output_path.push(format!("{} - {}", track.track_number, track_name));
@@ -60,14 +60,15 @@ impl PipelineStage for OrganizeStage {
                         output_path.display()
                     );
 
+                    let new_name =
+                        format!("{} - {} - {}", track.track_number, track_name, track.rid.id);
                     output_path = output_dir.clone();
-                    output_path.push(format!(
-                        "{} - {} - {}",
-                        track.track_number, track_name, track.rid.id
-                    ));
+                    output_path.push(&new_name);
                     if let Some(ext) = artifact.file_path.extension() {
                         output_path.set_extension(ext);
                     }
+
+                    tracing::debug!("renaming file using\n\tnew: {}\n\ttrack_number = {}\n\ttrack_name = {}\n\ttrack_id = {}\n\tnew_name = {}",output_path.display(),track.track_number,track_name,track.rid.id,new_name);
                 }
 
                 output_path
