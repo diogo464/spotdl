@@ -426,7 +426,7 @@ impl MetadataFetcher {
         if let Err(err) = self
             .0
             .cache
-            .store(&key, &data, Duration::from_secs(60 * 60 * 4))
+            .store(&key, &data, Duration::from_secs(60 * 60 * 72))
         {
             tracing::error!("Failed to store metadata in cache: {}", err);
         }
