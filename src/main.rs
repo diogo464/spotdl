@@ -404,6 +404,8 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
     )
     .await?;
 
+    tracing::info!("download complete");
+
     Ok(())
 }
 
@@ -524,6 +526,8 @@ async fn subcmd_sync_download(args: SyncDownloadArgs) -> Result<()> {
         rids,
     )
     .await?;
+
+    tracing::info!("sync complete");
 
     Ok(())
 }
