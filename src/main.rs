@@ -566,6 +566,7 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
                     } else {
                         id3::Tag::read_from_path(&file).unwrap_or_default()
                     };
+                    let prev_tag = tag.clone();
                     spotdl::tag::fetch_metadata_to_existing_tag_with(
                         &mut tag,
                         track.rid.id,
@@ -573,6 +574,10 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
                         &fetch_metadata_params,
                     )
                     .await?;
+                    if tag == prev_tag {
+                        tracing::debug!("no metadata changes for {}", file.display());
+                        continue;
+                    }
                     if file.extension() == Some(OsStr::new("wav")) {
                         tag.write_to_wav_path(&file, id3::Version::Id3v24)
                             .with_context(|| {
