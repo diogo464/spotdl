@@ -25,6 +25,7 @@ pub struct FsCacheMetadataFetcherParams {
     pub album_ttl: Duration,
     pub track_ttl: Duration,
     pub playlist_ttl: Duration,
+    pub image_ttl: Duration,
 }
 
 #[derive(Debug)]
@@ -52,6 +53,7 @@ where
                 album_ttl: Duration::MAX,
                 track_ttl: Duration::MAX,
                 playlist_ttl: Duration::from_secs(60 * 60 * 1),
+                image_ttl: Duration::MAX,
             },
         )
         .await
@@ -78,15 +80,19 @@ where
         Ok(())
     }
 
-    async fn load<T>(&self, key: &str) -> Result<Option<T>>
+    async fn load<T>(&self, key: &str, ttl: Duration) -> Result<Option<T>>
     where
         T: DeserializeOwned + Clone + Send + 'static,
     {
         let path = self.key_path(key);
-        let contents = tokio::fs::read_to_string(path).await?;
-        let value = serde_json::from_str(&contents)?;
+        let contents = tokio::fs::read_to_string(&path).await?;
+        let cache_item: CacheItem<T> = serde_json::from_str(&contents)?;
+        if Self::now() - cache_item.created > ttl.as_secs() {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(None);
+        }
         tracing::trace!("loaded {} from cache", key);
-        Ok(Some(value))
+        Ok(Some(cache_item.value))
     }
 
     fn key_bucket(key: &str) -> u64 {
@@ -115,7 +121,7 @@ where
 {
     async fn get_artist(&self, id: SpotifyId) -> Result<Artist> {
         let key = ResourceId::from((Resource::Artist, id)).to_string();
-        if let Ok(Some(artist)) = self.load(&key).await {
+        if let Ok(Some(artist)) = self.load(&key, self.params.artist_ttl).await {
             return Ok(artist);
         }
         let artist = self.fetcher.get_artist(id).await?;
@@ -125,7 +131,7 @@ where
 
     async fn get_album(&self, id: SpotifyId) -> Result<Album> {
         let key = ResourceId::from((Resource::Album, id)).to_string();
-        if let Ok(Some(album)) = self.load(&key).await {
+        if let Ok(Some(album)) = self.load(&key, self.params.album_ttl).await {
             return Ok(album);
         }
         let album = self.fetcher.get_album(id).await?;
@@ -135,7 +141,7 @@ where
 
     async fn get_track(&self, id: SpotifyId) -> Result<Track> {
         let key = ResourceId::from((Resource::Track, id)).to_string();
-        if let Ok(Some(track)) = self.load(&key).await {
+        if let Ok(Some(track)) = self.load(&key, self.params.track_ttl).await {
             return Ok(track);
         }
         let track = self.fetcher.get_track(id).await?;
@@ -145,7 +151,7 @@ where
 
     async fn get_playlist(&self, id: SpotifyId) -> std::io::Result<crate::metadata::Playlist> {
         let key = ResourceId::from((Resource::Playlist, id)).to_string();
-        if let Ok(Some(playlist)) = self.load(&key).await {
+        if let Ok(Some(playlist)) = self.load(&key, self.params.playlist_ttl).await {
             return Ok(playlist);
         }
         let playlist = self.fetcher.get_playlist(id).await?;
@@ -155,7 +161,7 @@ where
 
     async fn get_image(&self, url: &str) -> Result<Bytes> {
         let key = format!("image-{}", url);
-        if let Ok(Some(image)) = self.load(&key).await {
+        if let Ok(Some(image)) = self.load(&key, self.params.image_ttl).await {
             return Ok(image);
         }
         let image = self.fetcher.get_image(url).await?;

@@ -14,7 +14,10 @@ use clap::{Parser, ValueEnum};
 use indicatif::ProgressStyle;
 use serde::{de::DeserializeOwned, Serialize};
 use spotdl::{
-    fetcher::{FsCacheMetadataFetcher, MetadataFetcher, SpotifyMetadataFetcher},
+    fetcher::{
+        FsCacheMetadataFetcher, FsCacheMetadataFetcherParams, MetadataFetcher,
+        SpotifyMetadataFetcher,
+    },
     pipeline::{FFmpegStage, OrganizeStage, PipelineBuilder, PipelineEvents, TagStage},
     scan::ScanParams,
     session::Session,
@@ -31,13 +34,107 @@ struct Args {
 }
 
 #[derive(Debug, Parser)]
-struct GroupCacheDir {
+struct GroupCache {
     /// Cache directory.
     ///
     /// This directory will be used to save login credentials and metadata from spotify api
     /// requests.
     #[clap(long, env = "SPOTDL_CACHE_DIR")]
     cache_dir: Option<PathBuf>,
+
+    /// Artist TTL.
+    ///
+    /// The time to live for artist metadata in the cache, in seconds(-1 for MAX).
+    #[clap(long, env = "SPOTDL_CACHE_ARTIST_TTL", default_value = "86400")]
+    artist_ttl: i64,
+
+    /// Album TTL.
+    ///
+    /// The time to live for album metadata in the cache, in seconds(-1 for MAX).
+    #[clap(long, env = "SPOTDL_CACHE_ALBUM_TTL", default_value = "-1")]
+    album_ttl: i64,
+
+    /// Track TTL.
+    ///
+    /// The time to live for track metadata in the cache, in seconds(-1 for MAX).
+    #[clap(long, env = "SPOTDL_CACHE_TRACK_TTL", default_value = "-1")]
+    track_ttl: i64,
+
+    /// Playlist TTL.
+    ///
+    /// The time to live for playlist metadata in the cache, in seconds(-1 for MAX).
+    #[clap(long, env = "SPOTDL_CACHE_PLAYLIST_TTL", default_value = "3600")]
+    playlist_ttl: i64,
+
+    /// Image TTL.
+    ///
+    /// The time to live for image data in the cache, in seconds(-1 for MAX).
+    #[clap(long, env = "SPOTDL_CACHE_IMAGE_TTL", default_value = "-1")]
+    image_ttl: i64,
+}
+
+impl GroupCache {
+    fn create_fs_fetcher_param(&self) -> FsCacheMetadataFetcherParams {
+        FsCacheMetadataFetcherParams {
+            directory: self.get_metadata_dir(),
+            artist_ttl: self.artist_ttl(),
+            album_ttl: self.album_ttl(),
+            track_ttl: self.track_ttl(),
+            playlist_ttl: self.playlist_ttl(),
+            image_ttl: self.image_ttl(),
+        }
+    }
+
+    fn get_credentials_dir(&self) -> PathBuf {
+        let cache_dir = self.get_cache_dir();
+        cache_dir.join("credentials")
+    }
+
+    fn get_metadata_dir(&self) -> PathBuf {
+        let cache_dir = self.get_cache_dir();
+        cache_dir.join("metadata")
+    }
+
+    fn get_cache_dir(&self) -> PathBuf {
+        match self.cache_dir {
+            Some(ref dir) => dir.clone(),
+            None => {
+                let home = std::env::var("HOME")
+                    .context("getting $HOME")
+                    .expect("getting $HOME");
+                let dir = PathBuf::from(home).join(".cache/spotdl");
+                dir
+            }
+        }
+    }
+
+    fn artist_ttl(&self) -> Duration {
+        Self::i64_to_dur(self.artist_ttl)
+    }
+
+    fn album_ttl(&self) -> Duration {
+        Self::i64_to_dur(self.album_ttl)
+    }
+
+    fn track_ttl(&self) -> Duration {
+        Self::i64_to_dur(self.track_ttl)
+    }
+
+    fn playlist_ttl(&self) -> Duration {
+        Self::i64_to_dur(self.playlist_ttl)
+    }
+
+    fn image_ttl(&self) -> Duration {
+        Self::i64_to_dur(self.image_ttl)
+    }
+
+    fn i64_to_dur(i: i64) -> Duration {
+        if i == -1 {
+            Duration::MAX
+        } else {
+            Duration::from_secs(i as u64)
+        }
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -162,7 +259,7 @@ struct ResourceSelector {
 #[derive(Debug, Parser)]
 struct LoginArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     /// Spotify username
     username: String,
@@ -175,7 +272,7 @@ struct LoginArgs {
 #[derive(Debug, Parser)]
 struct LogoutArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     username: String,
 }
@@ -184,7 +281,7 @@ struct LogoutArgs {
 #[derive(Debug, Parser)]
 struct InfoArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     #[clap(flatten)]
     group_auth: GroupAuth,
@@ -202,7 +299,7 @@ struct InfoArgs {
 #[derive(Debug, Parser)]
 struct DownloadArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     #[clap(flatten)]
     group_auth: GroupAuth,
@@ -247,7 +344,7 @@ enum SyncAction {
 #[derive(Debug, Parser)]
 struct SyncAddArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     #[clap(flatten)]
     group_auth: GroupAuth,
@@ -263,7 +360,7 @@ struct SyncAddArgs {
 #[derive(Debug, Parser)]
 struct SyncRemoveArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     #[clap(flatten)]
     group_auth: GroupAuth,
@@ -286,7 +383,7 @@ struct SyncListArgs {
 #[derive(Debug, Parser)]
 struct SyncDownloadArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     #[clap(flatten)]
     group_auth: GroupAuth,
@@ -308,7 +405,7 @@ struct SyncDownloadArgs {
 #[derive(Debug, Parser)]
 struct UpdateArgs {
     #[clap(flatten)]
-    group_cache: GroupCacheDir,
+    group_cache: GroupCache,
 
     #[clap(flatten)]
     group_auth: GroupAuth,
@@ -330,7 +427,7 @@ struct UpdateArgs {
 }
 
 async fn subcmd_login(args: LoginArgs) -> Result<()> {
-    let credentials_dir = helper_get_credentials_dir(&args.group_cache)?;
+    let credentials_dir = args.group_cache.get_credentials_dir();
     let credentials_path = credentials_dir.join(&args.username);
     let login_credentials = LoginCredentials {
         username: args.username,
@@ -347,7 +444,7 @@ async fn subcmd_login(args: LoginArgs) -> Result<()> {
 }
 
 async fn subcmd_logout(args: LogoutArgs) -> Result<()> {
-    let credentials_dir = helper_get_credentials_dir(&args.group_cache)?;
+    let credentials_dir = args.group_cache.get_credentials_dir();
     let credentials_path = credentials_dir.join(args.username);
     if credentials_path.exists() {
         tokio::fs::remove_file(&credentials_path)
@@ -360,11 +457,7 @@ async fn subcmd_logout(args: LogoutArgs) -> Result<()> {
 async fn subcmd_info(args: InfoArgs) -> Result<()> {
     let rid = helper_resource_selector_to_id(&args.resource)?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
-    let fetcher = FsCacheMetadataFetcher::new(
-        SpotifyMetadataFetcher::delayed(credentials),
-        helper_get_metadata_dir(&args.group_cache)?,
-    )
-    .await?;
+    let fetcher = helper_create_fetcher_delayed(credentials, &args.group_cache).await?;
 
     let mut output = Vec::new();
     match rid.resource {
@@ -395,11 +488,7 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
     let rid = helper_resource_selector_to_id(&args.resource)?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let fetcher = FsCacheMetadataFetcher::new(
-        SpotifyMetadataFetcher::new(session.clone()),
-        helper_get_metadata_dir(&args.group_cache)?,
-    )
-    .await?;
+    let fetcher = helper_create_fetcher(session.clone(), &args.group_cache).await?;
 
     helper_download_rids(
         session,
@@ -472,11 +561,7 @@ async fn subcmd_sync_add(args: SyncAddArgs) -> Result<()> {
 
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let fetcher = FsCacheMetadataFetcher::new(
-        SpotifyMetadataFetcher::new(session.clone()),
-        helper_get_metadata_dir(&args.group_cache)?,
-    )
-    .await?;
+    let fetcher = helper_create_fetcher(session.clone(), &args.group_cache).await?;
 
     let description = match rid.resource {
         Resource::Artist => {
@@ -523,11 +608,7 @@ async fn subcmd_sync_download(args: SyncDownloadArgs) -> Result<()> {
     let manifest = helper_read_manifest(&args.manifest.manifest).await?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let fetcher = FsCacheMetadataFetcher::new(
-        SpotifyMetadataFetcher::new(session.clone()),
-        helper_get_metadata_dir(&args.group_cache)?,
-    )
-    .await?;
+    let fetcher = helper_create_fetcher(session.clone(), &args.group_cache).await?;
     let rids = manifest.entries().map(|entry| entry.resource_id).collect();
 
     helper_download_rids(
@@ -549,13 +630,7 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     let files = helper_collect_files(&args.path).await?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let fetcher = Arc::new(
-        FsCacheMetadataFetcher::new(
-            SpotifyMetadataFetcher::new(session.clone()),
-            helper_get_metadata_dir(&args.group_cache)?,
-        )
-        .await?,
-    );
+    let fetcher = Arc::new(helper_create_fetcher(session.clone(), &args.group_cache).await?);
 
     let (tx, rx) = flume::bounded::<PathBuf>(args.workers);
     let mut handles = Vec::new();
@@ -837,6 +912,30 @@ async fn helper_write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
+async fn helper_create_fetcher(
+    session: Session,
+    group_cache: &GroupCache,
+) -> Result<impl MetadataFetcher> {
+    let fetcher = FsCacheMetadataFetcher::with(
+        SpotifyMetadataFetcher::new(session.clone()),
+        group_cache.create_fs_fetcher_param(),
+    )
+    .await?;
+    Ok(fetcher)
+}
+
+async fn helper_create_fetcher_delayed(
+    credentials: Credentials,
+    group_cache: &GroupCache,
+) -> Result<impl MetadataFetcher> {
+    let fetcher = FsCacheMetadataFetcher::with(
+        SpotifyMetadataFetcher::delayed(credentials),
+        group_cache.create_fs_fetcher_param(),
+    )
+    .await?;
+    Ok(fetcher)
+}
+
 async fn helper_collect_files(path: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut dirs = VecDeque::new();
@@ -870,35 +969,17 @@ fn helper_resource_selector_to_id(selector: &ResourceSelector) -> Result<Resourc
     spotdl::id::parse(&selector.id, kind).context("parsing resource id")
 }
 
-fn helper_get_cache_dir(dir: &GroupCacheDir) -> Result<PathBuf> {
-    match dir.cache_dir {
-        Some(ref dir) => Ok(dir.clone()),
-        None => {
-            let home = std::env::var("HOME").context("getting $HOME")?;
-            let dir = PathBuf::from(home).join(".cache/spotdl");
-            Ok(dir)
-        }
-    }
-}
-
-fn helper_get_credentials_dir(dir: &GroupCacheDir) -> Result<PathBuf> {
-    let cache_dir = helper_get_cache_dir(dir)?;
-    Ok(cache_dir.join("credentials"))
-}
-
-fn helper_get_metadata_dir(dir: &GroupCacheDir) -> Result<PathBuf> {
-    let cache_dir = helper_get_cache_dir(dir)?;
-    Ok(cache_dir.join("metadata"))
-}
-
-async fn helper_get_credentials(dir: &GroupCacheDir, auth: &GroupAuth) -> Result<Credentials> {
-    let credentials_dir = helper_get_credentials_dir(dir)?;
+async fn helper_get_credentials(
+    group_cache: &GroupCache,
+    group_auth: &GroupAuth,
+) -> Result<Credentials> {
+    let credentials_dir = group_cache.get_credentials_dir();
     tokio::fs::create_dir_all(&credentials_dir)
         .await
         .context("creating credentials dir")?;
-    if let Some(username) = auth.username.clone() {
+    if let Some(username) = group_auth.username.clone() {
         let credentials_path = credentials_dir.join(&username);
-        if credentials_path.is_file() && !auth.password.is_some() {
+        if credentials_path.is_file() && !group_auth.password.is_some() {
             let credentials = helper_read_json(&credentials_path)
                 .await
                 .context("reading credentials")?;
@@ -906,7 +987,7 @@ async fn helper_get_credentials(dir: &GroupCacheDir, auth: &GroupAuth) -> Result
         } else {
             let credentials = spotdl::session::login(&LoginCredentials {
                 username: username.clone(),
-                password: auth
+                password: group_auth
                     .password
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("missing password"))?,

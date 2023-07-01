@@ -6,7 +6,7 @@ use crate::{
 };
 
 mod filesystem;
-pub use filesystem::FsCacheMetadataFetcher;
+pub use filesystem::{FsCacheMetadataFetcher, FsCacheMetadataFetcherParams};
 mod null;
 pub use null::NullMetadataFetcher;
 mod rate_limited;
