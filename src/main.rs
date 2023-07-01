@@ -799,6 +799,7 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
                         &fetch_metadata_params,
                     )
                     .await?;
+
                     if file.extension() == Some(OsStr::new("wav")) {
                         tag.write_to_wav_path(&file, id3::Version::Id3v24)
                             .with_context(|| {

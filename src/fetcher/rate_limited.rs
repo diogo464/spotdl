@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+use crate::metadata::Image;
+
 use super::MetadataFetcher;
 
 // TODO: this is currently unimplemented because we added retries with sleeps in the spotify
@@ -46,7 +48,7 @@ where
         todo!()
     }
 
-    async fn get_image(&self, url: &str) -> std::io::Result<bytes::Bytes> {
+    async fn get_image(&self, url: &str) -> std::io::Result<Image> {
         todo!()
     }
 }

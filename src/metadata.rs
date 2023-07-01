@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use bytes::Bytes;
 use librespot::metadata::Metadata;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use thiserror::Error;
@@ -34,6 +35,12 @@ pub trait MetadataCache: Send + Sync + 'static {
     fn load(&self, key: &str) -> std::io::Result<Option<Vec<u8>>>;
 }
 */
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Image {
+    pub content_type: String,
+    pub data: Bytes,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {

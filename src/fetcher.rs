@@ -1,7 +1,7 @@
 use bytes::Bytes;
 
 use crate::{
-    metadata::{Album, Artist, Playlist, Track},
+    metadata::{Album, Artist, Image, Playlist, Track},
     SpotifyId,
 };
 
@@ -20,7 +20,7 @@ pub trait MetadataFetcher: Send + Sync + 'static {
     async fn get_album(&self, id: SpotifyId) -> std::io::Result<Album>;
     async fn get_track(&self, id: SpotifyId) -> std::io::Result<Track>;
     async fn get_playlist(&self, id: SpotifyId) -> std::io::Result<Playlist>;
-    async fn get_image(&self, url: &str) -> std::io::Result<Bytes>;
+    async fn get_image(&self, url: &str) -> std::io::Result<Image>;
 }
 
 /*

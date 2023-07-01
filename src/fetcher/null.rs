@@ -1,3 +1,5 @@
+use crate::metadata::Image;
+
 use super::MetadataFetcher;
 
 #[derive(Debug)]
@@ -36,7 +38,7 @@ impl MetadataFetcher for NullMetadataFetcher {
         ))
     }
 
-    async fn get_image(&self, _url: &str) -> std::io::Result<bytes::Bytes> {
+    async fn get_image(&self, _url: &str) -> std::io::Result<Image> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             "NullMetadataFetcher::get_image",

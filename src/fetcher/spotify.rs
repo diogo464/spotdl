@@ -4,7 +4,7 @@ use librespot::metadata::Metadata;
 use tokio::sync::Mutex;
 
 use crate::{
-    metadata::{Album, Artist, Disc, Lyrics, LyricsKind, Playlist, SyncedLine, Track},
+    metadata::{Album, Artist, Disc, Image, Lyrics, LyricsKind, Playlist, SyncedLine, Track},
     session::Session,
     Credentials, Resource, ResourceId, SpotifyId,
 };
@@ -272,24 +272,31 @@ impl MetadataFetcher for SpotifyMetadataFetcher {
         Ok(playlist)
     }
 
-    async fn get_image(&self, url: &str) -> std::io::Result<bytes::Bytes> {
-        self.client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("failed to fetch image: {}", e),
-                )
-            })?
-            .bytes()
-            .await
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("failed to fetch image: {}", e),
-                )
-            })
+    async fn get_image(&self, url: &str) -> std::io::Result<Image> {
+        let response = self.client.get(url).send().await.map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to send get request: {}", e),
+            )
+        })?;
+
+        let mimetype = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/jpeg")
+            .to_owned();
+        let data = response.bytes().await.map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("failed to get response bytes: {}", e),
+            )
+        })?;
+        let image = Image {
+            data,
+            content_type: mimetype,
+        };
+
+        Ok(image)
     }
 }

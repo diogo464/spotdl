@@ -7,7 +7,7 @@ use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::metadata::{Album, Artist, Track};
+use crate::metadata::{Album, Artist, Image, Track};
 use crate::{Resource, ResourceId, SpotifyId};
 
 use super::MetadataFetcher;
@@ -159,7 +159,7 @@ where
         Ok(playlist)
     }
 
-    async fn get_image(&self, url: &str) -> Result<Bytes> {
+    async fn get_image(&self, url: &str) -> Result<Image> {
         let key = format!("image-{}", url);
         if let Ok(Some(image)) = self.load(&key, self.params.image_ttl).await {
             return Ok(image);

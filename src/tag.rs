@@ -151,20 +151,13 @@ where
 
     // add cover image
     if let Some(cover) = album.cover && params.download_images {
-        let response = reqwest::get(&cover).await?;
-        let mimetype = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .to_owned();
-        let data = response.bytes().await?;
+        let image = fetcher.get_image(&cover).await?;
 
         tag.add_frame(id3::frame::Picture {
-            mime_type: mimetype.to_owned(),
+            mime_type: image.content_type,
             picture_type: id3::frame::PictureType::CoverFront,
             description: String::default(),
-            data: data.to_vec(),
+            data: image.data.to_vec()
         });
     }
 
