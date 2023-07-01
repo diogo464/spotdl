@@ -30,7 +30,7 @@ impl MetadataFetcher for NullMetadataFetcher {
 
     async fn get_playlist(
         &self,
-        id: crate::SpotifyId,
+        _id: crate::SpotifyId,
     ) -> std::io::Result<crate::metadata::Playlist> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,

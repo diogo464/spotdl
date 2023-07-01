@@ -1,14 +1,13 @@
-use std::{sync::Arc, time::Duration};
+use std::{time::Duration};
 
 use bytes::Bytes;
-use librespot::metadata::Metadata;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use thiserror::Error;
-use tokio::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+
+
 
 use crate::{
-    session::{Session, SessionError},
-    Credentials, Resource, ResourceId, SpotifyId,
+    ResourceId,
 };
 
 /*

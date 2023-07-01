@@ -104,8 +104,8 @@ impl GroupCache {
                 let home = std::env::var("HOME")
                     .context("getting $HOME")
                     .expect("getting $HOME");
-                let dir = PathBuf::from(home).join(".cache/spotdl");
-                dir
+                
+                PathBuf::from(home).join(".cache/spotdl")
             }
         }
     }
@@ -345,7 +345,7 @@ impl ResourceSelector {
         )?;
         Self::parse_identifiers(&mut resource_ids, None, self.identifiers.iter())?;
         for manifest in self.manifest.iter() {
-            let manifest = helper_read_manifest(&manifest).await?;
+            let manifest = helper_read_manifest(manifest).await?;
             resource_ids.extend(manifest.resource_ids());
         }
         Ok(resource_ids)
@@ -1149,8 +1149,8 @@ async fn helper_write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
 }
 
 fn helper_create_fs_cache(group_cache: &GroupCache) -> FsCache {
-    let fs_cache = FsCache::new(group_cache.get_metadata_dir());
-    fs_cache
+    
+    FsCache::new(group_cache.get_metadata_dir())
 }
 
 async fn helper_create_fetcher(
@@ -1211,7 +1211,7 @@ async fn helper_get_credentials(
         .context("creating credentials dir")?;
     if let Some(username) = group_auth.username.clone() {
         let credentials_path = credentials_dir.join(&username);
-        if credentials_path.is_file() && !group_auth.password.is_some() {
+        if credentials_path.is_file() && group_auth.password.is_none() {
             let credentials = helper_read_json(&credentials_path)
                 .await
                 .context("reading credentials")?;

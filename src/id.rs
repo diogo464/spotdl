@@ -180,7 +180,7 @@ pub fn parse_uri(uri: &str) -> Result<ResourceId> {
         .or_else(|| uri.find("playlist").map(|idx| (idx, Resource::Playlist)))
         .ok_or(IdParseError)?;
     let rem = &uri[idx..];
-    let id_start = rem.find(":").map(|i| i + 1).ok_or(IdParseError)?;
+    let id_start = rem.find(':').map(|i| i + 1).ok_or(IdParseError)?;
     let id = &rem[id_start..];
     let id = librespot::core::SpotifyId::from_base62(id)
         .map_err(|_| IdParseError)?
@@ -208,8 +208,8 @@ pub fn parse_url(url: &str) -> Result<ResourceId> {
         .or_else(|| url.find("playlist").map(|idx| (idx, Resource::Playlist)))
         .ok_or(IdParseError)?;
     let rem = &url[idx..];
-    let id_start = rem.find("/").map(|i| i + 1).ok_or(IdParseError)?;
-    let id_end = rem[id_start..].find("?").unwrap_or(rem.len() - id_start);
+    let id_start = rem.find('/').map(|i| i + 1).ok_or(IdParseError)?;
+    let id_end = rem[id_start..].find('?').unwrap_or(rem.len() - id_start);
     let id = &rem[id_start..id_start + id_end];
     let id = librespot::core::SpotifyId::from_base62(id)
         .map_err(|_| IdParseError)?

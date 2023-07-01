@@ -114,11 +114,11 @@ where
     }
 
     // set disc
-    tag.set_disc(track.disc_number as u32);
+    tag.set_disc(track.disc_number);
     tag.set_total_discs(album.discs.len() as u32);
 
     // set track number
-    tag.set_track(track.track_number as u32);
+    tag.set_track(track.track_number);
     tag.set_total_tracks(album.discs[track.disc_number as usize - 1].tracks.len() as u32);
 
     // set lyrics

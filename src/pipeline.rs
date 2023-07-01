@@ -499,7 +499,7 @@ async fn worker_download<F>(
                 let header = wav::Header::new(
                     wav::WAV_FORMAT_PCM,
                     download::NUM_CHANNELS as u16,
-                    download::SAMPLE_RATE as u32,
+                    download::SAMPLE_RATE,
                     download::BITS_PER_SAMPLE as u16,
                 );
 
@@ -580,7 +580,7 @@ async fn worker_postprocess<F>(
             let process_result = stage
                 .process(
                     &fetcher,
-                    &download_artifact.working_dir.path(),
+                    download_artifact.working_dir.path(),
                     StageArtifact {
                         resource_id: download_artifact.resource_id,
                         file_path: most_recent_path,

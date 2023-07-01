@@ -192,7 +192,7 @@ async fn main() -> Result<()> {
     let dummy_fetcher = DummyMetadataFetcher;
     let fetcher = CachedMetadataFetcher::new(dummy_fetcher, tempdir.path().to_owned()).await?;
 
-    let artist = fetcher.get_artist(SpotifyId::new(1)).await?;
+    let _artist = fetcher.get_artist(SpotifyId::new(1)).await?;
     fetcher.get_artist(SpotifyId::new(1)).await?;
     fetcher.get_artist(SpotifyId::new(1)).await?;
     fetcher.get_artist(SpotifyId::new(1)).await?;

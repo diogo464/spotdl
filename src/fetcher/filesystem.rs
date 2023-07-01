@@ -136,7 +136,7 @@ impl Default for FsCacheMetadataFetcherParams {
             artist_ttl: Duration::from_secs(60 * 60 * 24),
             album_ttl: Duration::MAX,
             track_ttl: Duration::MAX,
-            playlist_ttl: Duration::from_secs(60 * 60 * 1),
+            playlist_ttl: Duration::from_secs(60 * 60),
             image_ttl: Duration::MAX,
         }
     }

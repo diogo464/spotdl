@@ -13,7 +13,7 @@ pub use memory::MemoryDownloadSink;
 
 use crate::{session::Session, Resource, ResourceId, SpotifyId};
 
-pub const SAMPLE_RATE: u32 = librespot::playback::SAMPLE_RATE as u32;
+pub const SAMPLE_RATE: u32 = librespot::playback::SAMPLE_RATE;
 pub const NUM_CHANNELS: u32 = librespot::playback::NUM_CHANNELS as u32;
 pub const BITS_PER_SAMPLE: u32 = 16;
 

@@ -52,7 +52,7 @@ where
             tokio::fs::create_dir_all(&output_dir).await?;
 
             let output_path = {
-                let track_name = track.name.replace("/", "-").replace(".", "");
+                let track_name = track.name.replace('/', "-").replace('.', "");
 
                 let mut output_path = output_dir.clone();
                 output_path.push(format!("{} - {}", track.track_number, track_name));
