@@ -17,54 +17,58 @@ struct CacheItem<T> {
     value: T,
 }
 
-#[derive(Debug, Clone)]
-pub struct FsCacheMetadataFetcherParams {
-    pub directory: PathBuf,
-    pub artist_ttl: Duration,
-    pub album_ttl: Duration,
-    pub track_ttl: Duration,
-    pub playlist_ttl: Duration,
-    pub image_ttl: Duration,
-}
-
 #[derive(Debug)]
-pub struct FsCacheMetadataFetcher<F>
-where
-    F: MetadataFetcher,
-{
-    fetcher: F,
-    params: FsCacheMetadataFetcherParams,
+pub struct FsCache {
+    directory: PathBuf,
 }
 
-impl<F> FsCacheMetadataFetcher<F>
-where
-    F: MetadataFetcher,
-{
+impl FsCache {
     const BUCKETS: u64 = 256;
     const RANDOM_STATE: ahash::RandomState = ahash::RandomState::with_seeds(0, 0, 0, 0);
-    const ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
-        &base64::alphabet::URL_SAFE,
-        base64::engine::GeneralPurposeConfig::new(),
-    );
 
-    pub async fn new(fetcher: F, directory: PathBuf) -> Result<Self> {
-        Self::with(
-            fetcher,
-            FsCacheMetadataFetcherParams {
-                directory,
-                artist_ttl: Duration::from_secs(60 * 60 * 24),
-                album_ttl: Duration::MAX,
-                track_ttl: Duration::MAX,
-                playlist_ttl: Duration::from_secs(60 * 60 * 1),
-                image_ttl: Duration::MAX,
-            },
-        )
-        .await
+    pub fn new(directory: PathBuf) -> Self {
+        Self { directory }
     }
 
-    pub async fn with(fetcher: F, params: FsCacheMetadataFetcherParams) -> Result<Self> {
-        tokio::fs::create_dir_all(&params.directory).await?;
-        Ok(Self { fetcher, params })
+    /// List all keys in the cache.
+    pub async fn list(&self) -> Result<Vec<String>> {
+        let mut keys = Vec::new();
+        for bucket in 0..Self::BUCKETS {
+            let bucket_path = self.directory.join(bucket.to_string());
+            if !bucket_path.exists() {
+                continue;
+            }
+            let mut dir = tokio::fs::read_dir(bucket_path).await?;
+            while let Some(entry) = dir.next_entry().await? {
+                if entry.path().is_dir() {
+                    continue;
+                }
+                let key = entry
+                    .path()
+                    .file_name()
+                    .expect("all cache keys should have a file name")
+                    .to_str()
+                    .expect("all cache keys should be valid UTF-8")
+                    .to_string();
+                keys.push(key);
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Remove a key from the cache.
+    pub async fn remove(&self, key: &str) -> Result<()> {
+        let bucket = self.key_path(key);
+        match tokio::fs::remove_file(bucket).await {
+            Ok(_) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => todo!(),
+        }
+    }
+
+    pub async fn clear(&self) -> Result<()> {
+        tokio::fs::remove_dir_all(&self.directory).await?;
+        Ok(())
     }
 
     async fn store<T>(&self, key: &str, value: &T) -> Result<()>
@@ -106,7 +110,7 @@ where
 
     fn key_path(&self, key: &str) -> PathBuf {
         let bucket = Self::key_bucket(key);
-        self.params.directory.join(bucket.to_string()).join(key)
+        self.directory.join(bucket.to_string()).join(key)
     }
 
     fn now() -> u64 {
@@ -117,6 +121,63 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct FsCacheMetadataFetcherParams {
+    pub artist_ttl: Duration,
+    pub album_ttl: Duration,
+    pub track_ttl: Duration,
+    pub playlist_ttl: Duration,
+    pub image_ttl: Duration,
+}
+
+impl Default for FsCacheMetadataFetcherParams {
+    fn default() -> Self {
+        Self {
+            artist_ttl: Duration::from_secs(60 * 60 * 24),
+            album_ttl: Duration::MAX,
+            track_ttl: Duration::MAX,
+            playlist_ttl: Duration::from_secs(60 * 60 * 1),
+            image_ttl: Duration::MAX,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FsCacheMetadataFetcher<F>
+where
+    F: MetadataFetcher,
+{
+    fetcher: F,
+    cache: FsCache,
+    params: FsCacheMetadataFetcherParams,
+}
+
+impl<F> FsCacheMetadataFetcher<F>
+where
+    F: MetadataFetcher,
+{
+    const ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::URL_SAFE,
+        base64::engine::GeneralPurposeConfig::new(),
+    );
+
+    pub async fn new(fetcher: F, directory: PathBuf) -> Result<Self> {
+        Self::with(fetcher, directory, Default::default()).await
+    }
+
+    pub async fn with(
+        fetcher: F,
+        directory: PathBuf,
+        params: FsCacheMetadataFetcherParams,
+    ) -> Result<Self> {
+        Ok(Self {
+            fetcher,
+            cache: FsCache::new(directory),
+            params,
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl<F> MetadataFetcher for FsCacheMetadataFetcher<F>
 where
@@ -124,41 +185,41 @@ where
 {
     async fn get_artist(&self, id: SpotifyId) -> Result<Artist> {
         let key = ResourceId::from((Resource::Artist, id)).to_string();
-        if let Ok(Some(artist)) = self.load(&key, self.params.artist_ttl).await {
+        if let Ok(Some(artist)) = self.cache.load(&key, self.params.artist_ttl).await {
             return Ok(artist);
         }
         let artist = self.fetcher.get_artist(id).await?;
-        self.store(&key, &artist).await?;
+        self.cache.store(&key, &artist).await?;
         Ok(artist)
     }
 
     async fn get_album(&self, id: SpotifyId) -> Result<Album> {
         let key = ResourceId::from((Resource::Album, id)).to_string();
-        if let Ok(Some(album)) = self.load(&key, self.params.album_ttl).await {
+        if let Ok(Some(album)) = self.cache.load(&key, self.params.album_ttl).await {
             return Ok(album);
         }
         let album = self.fetcher.get_album(id).await?;
-        self.store(&key, &album).await?;
+        self.cache.store(&key, &album).await?;
         Ok(album)
     }
 
     async fn get_track(&self, id: SpotifyId) -> Result<Track> {
         let key = ResourceId::from((Resource::Track, id)).to_string();
-        if let Ok(Some(track)) = self.load(&key, self.params.track_ttl).await {
+        if let Ok(Some(track)) = self.cache.load(&key, self.params.track_ttl).await {
             return Ok(track);
         }
         let track = self.fetcher.get_track(id).await?;
-        self.store(&key, &track).await?;
+        self.cache.store(&key, &track).await?;
         Ok(track)
     }
 
     async fn get_playlist(&self, id: SpotifyId) -> std::io::Result<crate::metadata::Playlist> {
         let key = ResourceId::from((Resource::Playlist, id)).to_string();
-        if let Ok(Some(playlist)) = self.load(&key, self.params.playlist_ttl).await {
+        if let Ok(Some(playlist)) = self.cache.load(&key, self.params.playlist_ttl).await {
             return Ok(playlist);
         }
         let playlist = self.fetcher.get_playlist(id).await?;
-        self.store(&key, &playlist).await?;
+        self.cache.store(&key, &playlist).await?;
         Ok(playlist)
     }
 
@@ -167,11 +228,11 @@ where
 
         let encoded = Self::ENGINE.encode(url);
         let key = format!("image:{}", encoded);
-        if let Ok(Some(image)) = self.load(&key, self.params.image_ttl).await {
+        if let Ok(Some(image)) = self.cache.load(&key, self.params.image_ttl).await {
             return Ok(image);
         }
         let image = self.fetcher.get_image(url).await?;
-        self.store(&key, &image).await?;
+        self.cache.store(&key, &image).await?;
         Ok(image)
     }
 }

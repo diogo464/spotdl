@@ -15,7 +15,7 @@ use indicatif::ProgressStyle;
 use serde::{de::DeserializeOwned, Serialize};
 use spotdl::{
     fetcher::{
-        FsCacheMetadataFetcher, FsCacheMetadataFetcherParams, MetadataFetcher,
+        FsCache, FsCacheMetadataFetcher, FsCacheMetadataFetcherParams, MetadataFetcher,
         SpotifyMetadataFetcher,
     },
     pipeline::{
@@ -79,7 +79,6 @@ struct GroupCache {
 impl GroupCache {
     fn create_fs_fetcher_param(&self) -> FsCacheMetadataFetcherParams {
         FsCacheMetadataFetcherParams {
-            directory: self.get_metadata_dir(),
             artist_ttl: self.artist_ttl(),
             album_ttl: self.album_ttl(),
             track_ttl: self.track_ttl(),
@@ -274,6 +273,7 @@ enum SubCmd {
     Scan(ScanArgs),
     Sync(SyncArgs),
     Update(UpdateArgs),
+    Cache(CacheArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -545,6 +545,44 @@ struct UpdateArgs {
 
     /// Directory to scan for files to update.
     path: PathBuf,
+}
+
+/// Interact with the cache.
+#[derive(Debug, Parser)]
+struct CacheArgs {
+    #[clap(subcommand)]
+    action: CacheAction,
+}
+
+#[derive(Debug, Parser)]
+enum CacheAction {
+    List(CacheListArgs),
+    Clear(CacheClearArgs),
+    Remove(CacheRemoveArgs),
+}
+
+/// List all cached keys.
+#[derive(Debug, Parser)]
+struct CacheListArgs {
+    #[clap(flatten)]
+    group_cache: GroupCache,
+}
+
+/// Clear the cache.
+#[derive(Debug, Parser)]
+struct CacheClearArgs {
+    #[clap(flatten)]
+    group_cache: GroupCache,
+}
+
+/// Remove a key from the cache.
+#[derive(Debug, Parser)]
+struct CacheRemoveArgs {
+    #[clap(flatten)]
+    group_cache: GroupCache,
+
+    /// Key to remove.
+    keys: Vec<String>,
 }
 
 async fn subcmd_login(args: LoginArgs) -> Result<()> {
@@ -875,6 +913,37 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
+async fn subcmd_cache(args: CacheArgs) -> Result<()> {
+    match args.action {
+        CacheAction::List(args) => subcmd_cache_list(args).await,
+        CacheAction::Clear(args) => subcmd_cache_clear(args).await,
+        CacheAction::Remove(args) => subcmd_cache_remove(args).await,
+    }
+}
+
+async fn subcmd_cache_list(args: CacheListArgs) -> Result<()> {
+    let cache = helper_create_fs_cache(&args.group_cache);
+    let entries = cache.list().await?;
+    for entry in entries {
+        println!("{}", entry);
+    }
+    Ok(())
+}
+
+async fn subcmd_cache_clear(args: CacheClearArgs) -> Result<()> {
+    let cache = helper_create_fs_cache(&args.group_cache);
+    cache.clear().await?;
+    Ok(())
+}
+
+async fn subcmd_cache_remove(args: CacheRemoveArgs) -> Result<()> {
+    let cache = helper_create_fs_cache(&args.group_cache);
+    for key in args.keys {
+        cache.remove(&key).await?;
+    }
+    Ok(())
+}
+
 async fn helper_download_rids<F>(
     session: Session,
     fetcher: F,
@@ -1079,12 +1148,18 @@ async fn helper_write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
+fn helper_create_fs_cache(group_cache: &GroupCache) -> FsCache {
+    let fs_cache = FsCache::new(group_cache.get_metadata_dir());
+    fs_cache
+}
+
 async fn helper_create_fetcher(
     session: Session,
     group_cache: &GroupCache,
 ) -> Result<impl MetadataFetcher> {
     let fetcher = FsCacheMetadataFetcher::with(
         SpotifyMetadataFetcher::new(session.clone()),
+        group_cache.get_metadata_dir(),
         group_cache.create_fs_fetcher_param(),
     )
     .await?;
@@ -1097,6 +1172,7 @@ async fn helper_create_fetcher_delayed(
 ) -> Result<impl MetadataFetcher> {
     let fetcher = FsCacheMetadataFetcher::with(
         SpotifyMetadataFetcher::delayed(credentials),
+        group_cache.get_metadata_dir(),
         group_cache.create_fs_fetcher_param(),
     )
     .await?;
@@ -1212,6 +1288,7 @@ async fn main() -> Result<()> {
         SubCmd::Scan(args) => subcmd_scan(args).await?,
         SubCmd::Sync(args) => subcmd_sync(args).await?,
         SubCmd::Update(args) => subcmd_update(args).await?,
+        SubCmd::Cache(args) => subcmd_cache(args).await?,
     };
 
     Ok(())
