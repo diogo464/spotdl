@@ -3,7 +3,6 @@ use std::io::Result;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use bytes::Bytes;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +42,10 @@ where
 {
     const BUCKETS: u64 = 256;
     const RANDOM_STATE: ahash::RandomState = ahash::RandomState::with_seeds(0, 0, 0, 0);
+    const ENGINE: base64::engine::GeneralPurpose = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::URL_SAFE,
+        base64::engine::GeneralPurposeConfig::new(),
+    );
 
     pub async fn new(fetcher: F, directory: PathBuf) -> Result<Self> {
         Self::with(
@@ -160,7 +163,10 @@ where
     }
 
     async fn get_image(&self, url: &str) -> Result<Image> {
-        let key = format!("image-{}", url);
+        use base64::engine::Engine;
+
+        let encoded = Self::ENGINE.encode(url);
+        let key = format!("image:{}", encoded);
         if let Ok(Some(image)) = self.load(&key, self.params.image_ttl).await {
             return Ok(image);
         }

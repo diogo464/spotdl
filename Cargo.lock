@@ -2349,6 +2349,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "async-trait",
+ "base64 0.21.2",
  "bytes",
  "clap",
  "flume",
