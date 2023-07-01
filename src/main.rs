@@ -238,21 +238,83 @@ enum ResourceKind {
 
 #[derive(Debug, Parser)]
 struct ResourceSelector {
-    /// Identifier kind.
-    /// If not specified, it will be inferred from the identifier.
-    /// It is only required if the identifier is ambiguous, for example, '5ujWPN9c4lh8pohnf4iVYK'.
+    /// Artist identifier.
+    ///
+    /// This can be a Spotify URI, URL or ID.
     #[clap(long)]
-    kind: Option<ResourceKind>,
+    artist: Vec<String>,
+
+    /// Album identifier.
+    ///
+    /// This can be a Spotify URI, URL or ID.
+    #[clap(long)]
+    album: Vec<String>,
+
+    /// Track identifier.
+    ///
+    /// This can be a Spotify URI, URL or ID.
+    #[clap(long)]
+    track: Vec<String>,
+
+    /// Playlist identifier.
+    ///
+    /// This can be a Spotify URI, URL or ID.
+    #[clap(long)]
+    playlist: Vec<String>,
+
+    /// Path to the manifest file.
+    ///
+    /// This is a path to a manifest file created by spotdl.
+    #[clap(long)]
+    manifest: Vec<PathBuf>,
 
     /// Identifier.
     ///
-    /// This can be a Spotify URI, URL or ID.
+    /// This can be a Spotify URI, URL.
+    /// ID is not support since it is ambiguous.
+    /// For manifest files, use the `manifest` flag.
     /// Ex:
     ///     - spotify:track:5ujWPN9c4lh8pohnf4iVYK
     ///     - https://open.spotify.com/track/5ujWPN9c4lh8pohnf4iVYK
-    ///     - 5ujWPN9c4lh8pohnf4iVYK
     #[clap(verbatim_doc_comment)]
-    id: String,
+    identifiers: Vec<String>,
+}
+
+impl ResourceSelector {
+    async fn resolve_rids(&self) -> Result<Vec<ResourceId>> {
+        let mut resource_ids = Vec::new();
+        Self::parse_identifiers(
+            &mut resource_ids,
+            Some(Resource::Artist),
+            self.artist.iter(),
+        )?;
+        Self::parse_identifiers(&mut resource_ids, Some(Resource::Album), self.album.iter())?;
+        Self::parse_identifiers(&mut resource_ids, Some(Resource::Track), self.track.iter())?;
+        Self::parse_identifiers(
+            &mut resource_ids,
+            Some(Resource::Playlist),
+            self.playlist.iter(),
+        )?;
+        Self::parse_identifiers(&mut resource_ids, None, self.identifiers.iter())?;
+        for manifest in self.manifest.iter() {
+            let manifest = helper_read_manifest(&manifest).await?;
+            resource_ids.extend(manifest.resource_ids());
+        }
+        Ok(resource_ids)
+    }
+
+    fn parse_identifiers(
+        resource_ids: &mut Vec<ResourceId>,
+        resource: Option<Resource>,
+        identifiers: impl Iterator<Item = impl AsRef<str>>,
+    ) -> Result<()> {
+        for identifier in identifiers {
+            let rid = spotdl::id::parse(identifier.as_ref(), resource)
+                .context("parsing resource id (possibily ambiguous)")?;
+            resource_ids.push(rid);
+        }
+        Ok(())
+    }
 }
 
 /// Login to spotify.
@@ -455,37 +517,40 @@ async fn subcmd_logout(args: LogoutArgs) -> Result<()> {
 }
 
 async fn subcmd_info(args: InfoArgs) -> Result<()> {
-    let rid = helper_resource_selector_to_id(&args.resource)?;
+    let rids = args.resource.resolve_rids().await?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let fetcher = helper_create_fetcher_delayed(credentials, &args.group_cache).await?;
 
     let mut output = Vec::new();
-    match rid.resource {
-        Resource::Artist => {
-            let artist = fetcher.get_artist(rid.id).await?;
-            serde_json::to_writer_pretty(&mut output, &artist)?;
+    for rid in rids {
+        match rid.resource {
+            Resource::Artist => {
+                let artist = fetcher.get_artist(rid.id).await?;
+                serde_json::to_writer_pretty(&mut output, &artist)?;
+            }
+            Resource::Album => {
+                let album = fetcher.get_album(rid.id).await?;
+                serde_json::to_writer_pretty(&mut output, &album)?;
+            }
+            Resource::Track => {
+                let track = fetcher.get_track(rid.id).await?;
+                serde_json::to_writer_pretty(&mut output, &track)?;
+            }
+            Resource::Playlist => {
+                let playlist = fetcher.get_playlist(rid.id).await?;
+                serde_json::to_writer_pretty(&mut output, &playlist)?;
+            }
         }
-        Resource::Album => {
-            let album = fetcher.get_album(rid.id).await?;
-            serde_json::to_writer_pretty(&mut output, &album)?;
-        }
-        Resource::Track => {
-            let track = fetcher.get_track(rid.id).await?;
-            serde_json::to_writer_pretty(&mut output, &track)?;
-        }
-        Resource::Playlist => {
-            let playlist = fetcher.get_playlist(rid.id).await?;
-            serde_json::to_writer_pretty(&mut output, &playlist)?;
-        }
-    }
 
-    tokio::io::stdout().write_all(&output).await?;
+        tokio::io::stdout().write_all(&output).await?;
+        output.clear();
+    }
 
     Ok(())
 }
 
 async fn subcmd_download(args: DownloadArgs) -> Result<()> {
-    let rid = helper_resource_selector_to_id(&args.resource)?;
+    let rids = args.resource.resolve_rids().await?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
     let fetcher = helper_create_fetcher(session.clone(), &args.group_cache).await?;
@@ -496,7 +561,7 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
         args.group_ffmpeg,
         args.group_scan,
         args.output_dir,
-        vec![rid],
+        rids,
     )
     .await?;
 
@@ -540,6 +605,10 @@ impl Manifest {
     fn entries(&self) -> impl Iterator<Item = &ManifestEntry> {
         self.0.iter()
     }
+
+    fn resource_ids(&self) -> impl Iterator<Item = ResourceId> + '_ {
+        self.0.iter().map(|entry| &entry.resource_id).copied()
+    }
 }
 
 async fn subcmd_sync(args: SyncArgs) -> Result<()> {
@@ -554,8 +623,14 @@ async fn subcmd_sync(args: SyncArgs) -> Result<()> {
 
 async fn subcmd_sync_add(args: SyncAddArgs) -> Result<()> {
     let mut manifest = helper_read_manifest(&args.manifest.manifest).await?;
-    let rid = helper_resource_selector_to_id(&args.resource)?;
-    if manifest.contains(&rid) {
+    let rids = args
+        .resource
+        .resolve_rids()
+        .await?
+        .into_iter()
+        .filter(|rid| !manifest.contains(rid))
+        .collect::<Vec<_>>();
+    if rids.is_empty() {
         return Ok(());
     }
 
@@ -563,26 +638,28 @@ async fn subcmd_sync_add(args: SyncAddArgs) -> Result<()> {
     let session = Session::connect(credentials).await?;
     let fetcher = helper_create_fetcher(session.clone(), &args.group_cache).await?;
 
-    let description = match rid.resource {
-        Resource::Artist => {
-            let artist = fetcher.get_artist(rid.id).await?;
-            artist.name
-        }
-        Resource::Album => {
-            let album = fetcher.get_album(rid.id).await?;
-            let artist = fetcher.get_artist(album.artists[0].id).await?;
-            format!("{} - {}", artist.name, album.name)
-        }
-        Resource::Track => {
-            let track = fetcher.get_track(rid.id).await?;
-            let album = fetcher.get_album(track.album.id).await?;
-            let artist = fetcher.get_artist(track.artists[0].id).await?;
-            format!("{} - {} - {}", artist.name, album.name, track.name)
-        }
-        Resource::Playlist => fetcher.get_playlist(rid.id).await?.name,
-    };
+    for rid in rids {
+        let description = match rid.resource {
+            Resource::Artist => {
+                let artist = fetcher.get_artist(rid.id).await?;
+                artist.name
+            }
+            Resource::Album => {
+                let album = fetcher.get_album(rid.id).await?;
+                let artist = fetcher.get_artist(album.artists[0].id).await?;
+                format!("{} - {}", artist.name, album.name)
+            }
+            Resource::Track => {
+                let track = fetcher.get_track(rid.id).await?;
+                let album = fetcher.get_album(track.album.id).await?;
+                let artist = fetcher.get_artist(track.artists[0].id).await?;
+                format!("{} - {} - {}", artist.name, album.name, track.name)
+            }
+            Resource::Playlist => fetcher.get_playlist(rid.id).await?.name,
+        };
+        manifest.add(rid, description);
+    }
 
-    manifest.add(rid, description);
     helper_write_manifest(&args.manifest.manifest, &manifest).await?;
 
     Ok(())
@@ -590,8 +667,10 @@ async fn subcmd_sync_add(args: SyncAddArgs) -> Result<()> {
 
 async fn subcmd_sync_remove(args: SyncRemoveArgs) -> Result<()> {
     let mut manifest = helper_read_manifest(&args.manifest.manifest).await?;
-    let rid = helper_resource_selector_to_id(&args.resource)?;
-    manifest.remove(&rid);
+    let rids = args.resource.resolve_rids().await?;
+    for rid in rids {
+        manifest.remove(&rid);
+    }
     helper_write_manifest(&args.manifest.manifest, &manifest).await?;
     Ok(())
 }
@@ -956,17 +1035,6 @@ async fn helper_collect_files(path: &Path) -> Result<Vec<PathBuf>> {
         }
     }
     Ok(files)
-}
-
-fn helper_resource_selector_to_id(selector: &ResourceSelector) -> Result<ResourceId> {
-    let kind = match selector.kind {
-        Some(ResourceKind::Artist) => Some(Resource::Artist),
-        Some(ResourceKind::Album) => Some(Resource::Album),
-        Some(ResourceKind::Track) => Some(Resource::Track),
-        Some(ResourceKind::Playlist) => Some(Resource::Playlist),
-        None => None,
-    };
-    spotdl::id::parse(&selector.id, kind).context("parsing resource id")
 }
 
 async fn helper_get_credentials(
