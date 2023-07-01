@@ -114,7 +114,7 @@ impl ResourceId {
         parse_uri(uri)
     }
 
-    pub fn to_uri(&self) -> String {
+    pub fn to_uri(self) -> String {
         let id = librespot::core::SpotifyId {
             id: self.id.0,
             item_type: From::from(""),
@@ -123,7 +123,7 @@ impl ResourceId {
         format!("spotify:{}:{}", self.resource, ids)
     }
 
-    pub(crate) fn to_librespot(&self) -> librespot::core::SpotifyId {
+    pub(crate) fn to_librespot(self) -> librespot::core::SpotifyId {
         use librespot::core::spotify_id::SpotifyItemType;
         let ty = match self.resource {
             Resource::Artist => SpotifyItemType::Artist,

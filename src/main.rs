@@ -104,7 +104,7 @@ impl GroupCache {
                 let home = std::env::var("HOME")
                     .context("getting $HOME")
                     .expect("getting $HOME");
-                
+
                 PathBuf::from(home).join(".cache/spotdl")
             }
         }
@@ -1002,7 +1002,7 @@ where
 {
     let disable_progress = std::env::var_os("SPOTDL_DISABLE_PROGRESS").is_some();
     if disable_progress {
-        while let Some(_) = events.recv().await {}
+        while events.recv().await.is_some() {}
     } else {
         let mp = indicatif::MultiProgress::new();
 
@@ -1149,7 +1149,6 @@ async fn helper_write_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
 }
 
 fn helper_create_fs_cache(group_cache: &GroupCache) -> FsCache {
-    
     FsCache::new(group_cache.get_metadata_dir())
 }
 
