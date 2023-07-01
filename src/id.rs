@@ -67,7 +67,7 @@ impl<'de> Deserialize<'de> for SpotifyId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceId {
     pub resource: Resource,
     pub id: SpotifyId,
@@ -83,6 +83,25 @@ impl std::fmt::Display for ResourceId {
 impl From<(Resource, SpotifyId)> for ResourceId {
     fn from((resource, id): (Resource, SpotifyId)) -> Self {
         Self { resource, id }
+    }
+}
+
+impl Serialize for ResourceId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_uri())
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let uri = String::deserialize(deserializer)?;
+        parse_uri(&uri).map_err(serde::de::Error::custom)
     }
 }
 
