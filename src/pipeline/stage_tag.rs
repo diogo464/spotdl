@@ -31,6 +31,14 @@ where
         _work_dir: &Path,
         artifact: StageArtifact,
     ) -> std::io::Result<PathBuf> {
+        if id3::Tag::read_from_path(&artifact.file_path).is_ok() {
+            tracing::debug!(
+                "{} already has a tag, not modifying metadata...",
+                artifact.file_path.display()
+            );
+            return Ok(artifact.file_path);
+        }
+
         let tag = match tag::fetch_metadata_to_tag(artifact.resource_id.id, &**fetcher).await {
             Ok(tag) => tag,
             Err(err) => {

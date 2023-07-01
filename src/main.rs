@@ -18,7 +18,10 @@ use spotdl::{
         FsCacheMetadataFetcher, FsCacheMetadataFetcherParams, MetadataFetcher,
         SpotifyMetadataFetcher,
     },
-    pipeline::{FFmpegStage, OrganizeStage, PipelineBuilder, PipelineEvents, TagStage},
+    pipeline::{
+        FFmpegStage, OrganizeStage, PipelineBuilder, PipelineEvents, PipelineSource,
+        PipelineSourceAction, TagStage,
+    },
     scan::ScanParams,
     session::Session,
     Credentials, LoginCredentials, Resource, ResourceId,
@@ -187,6 +190,51 @@ impl GroupScanDir {
             params.exclude(path);
         }
         params
+    }
+}
+
+#[derive(Debug, Parser)]
+struct GroupSource {
+    /// Music source directories.
+    ///
+    /// These directories are searched for audio files containing spotify ids in their tags.
+    /// When downloading a track, these directories are searched for the track's id to prevent redownloading.
+    /// A source is specified as an `<action>:<path>` pair, where `<action>` can be one of:
+    ///     - `copy`: copy the files to the destination.
+    ///     - `symlink`: symlink the files to the destination.
+    ///     - `hardlink`: hardlink the files to the destination.
+    ///
+    /// Examples:
+    ///    - `copy:/home/user/Music`
+    ///    - `symlink:../music`
+    ///    - `hardlink:/mnt/music`
+    #[clap(long, verbatim_doc_comment)]
+    source: Vec<String>,
+}
+
+impl GroupSource {
+    fn get_sources(&self) -> Result<Vec<PipelineSource>> {
+        let mut sources = Vec::new();
+        for source in self.source.iter() {
+            let source = Self::parse_source(source)?;
+            sources.push(source);
+        }
+        Ok(sources)
+    }
+
+    fn parse_source(source: &str) -> Result<PipelineSource> {
+        let (action, path) = source.rsplit_once(':').context("missing ':' in source")?;
+        let action = match action {
+            "copy" => PipelineSourceAction::Copy,
+            "symlink" => PipelineSourceAction::SymLink,
+            "hardlink" => PipelineSourceAction::HardLink,
+            _ => anyhow::bail!("invalid source action"),
+        };
+        let path = PathBuf::from(path);
+        Ok(PipelineSource {
+            source: path,
+            action,
+        })
     }
 }
 
@@ -372,6 +420,9 @@ struct DownloadArgs {
     #[clap(flatten)]
     group_scan: GroupScanDir,
 
+    #[clap(flatten)]
+    group_source: GroupSource,
+
     /// Output directory
     #[clap(long, default_value = ".")]
     output_dir: PathBuf,
@@ -551,6 +602,7 @@ async fn subcmd_info(args: InfoArgs) -> Result<()> {
 
 async fn subcmd_download(args: DownloadArgs) -> Result<()> {
     let rids = args.resource.resolve_rids().await?;
+    let sources = args.group_source.get_sources().context("getting sources")?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
     let fetcher = helper_create_fetcher(session.clone(), &args.group_cache).await?;
@@ -562,6 +614,7 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
         args.group_scan,
         args.output_dir,
         rids,
+        sources,
     )
     .await?;
 
@@ -572,7 +625,7 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
 
 async fn subcmd_scan(args: ScanArgs) -> Result<()> {
     for track in spotdl::scan::scan(&args.dir).await? {
-        println!("{}", track);
+        println!("{} {}", track.id, track.path.display());
     }
     Ok(())
 }
@@ -697,6 +750,7 @@ async fn subcmd_sync_download(args: SyncDownloadArgs) -> Result<()> {
         args.group_scan,
         args.output_dir.unwrap_or_else(|| PathBuf::from(".")),
         rids,
+        vec![],
     )
     .await?;
 
@@ -799,6 +853,7 @@ async fn helper_download_rids<F>(
     scan: GroupScanDir,
     output_dir: PathBuf,
     rids: Vec<ResourceId>,
+    sources: Vec<PipelineSource>,
 ) -> Result<()>
 where
     F: MetadataFetcher,
@@ -816,16 +871,20 @@ where
         .with_excluded_iter(
             excluded
                 .into_iter()
-                .map(|id| ResourceId::new(Resource::Track, id)),
+                .map(|item| ResourceId::new(Resource::Track, item.id)),
         )
         .with_session(session)
         .with_stage(TagStage);
     if let Some(ffmpeg) = ffmpeg.create_stage() {
         builder.with_stage(ffmpeg);
     }
+    builder.with_sources(sources);
     builder.with_stage(OrganizeStage::new(output_dir));
 
-    let (input, events) = builder.build();
+    let (input, events) = builder
+        .build()
+        .await
+        .context("failed to build download pipeline")?;
     let handle = tokio::spawn(helper_download_rids_progress(events, fetcher, WORKERS));
     for rid in rids {
         input.send(rid).await;

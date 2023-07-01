@@ -14,6 +14,12 @@ pub struct ScanParams {
     exclude: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ScanItem {
+    pub path: PathBuf,
+    pub id: SpotifyId,
+}
+
 impl ScanParams {
     pub fn include(&mut self, path: impl Into<PathBuf>) {
         self.include.push(path.into());
@@ -45,11 +51,11 @@ impl ScanParams {
     }
 }
 
-pub async fn scan(dir: impl Into<PathBuf>) -> std::io::Result<Vec<SpotifyId>> {
+pub async fn scan(dir: impl Into<PathBuf>) -> std::io::Result<Vec<ScanItem>> {
     scan_with(ScanParams::default().with_include(dir)).await
 }
 
-pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<SpotifyId>> {
+pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<ScanItem>> {
     const WORKERS: usize = 128;
 
     struct Work {
@@ -67,7 +73,7 @@ pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<SpotifyId>
     let params = Arc::new(params);
     let start_time = Instant::now();
     let (wtx, wrx) = flume::unbounded::<Work>();
-    let (itx, irx) = flume::bounded::<Option<SpotifyId>>(128);
+    let (itx, irx) = flume::bounded::<Option<ScanItem>>(128);
 
     for _ in 0..WORKERS {
         let params = params.clone();
@@ -88,8 +94,8 @@ pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<SpotifyId>
                 }
 
                 if path.is_file() {
-                    let id = scan_file(&path).await;
-                    itx.send_async(id).await.unwrap();
+                    let item = scan_file(&path).await.map(move |id| ScanItem { path, id });
+                    itx.send_async(item).await.unwrap();
                 } else if path.is_dir() {
                     let mut readdir = tokio::fs::read_dir(path).await.expect("reading directory");
                     while let Some(entry) = readdir.next_entry().await.unwrap() {
@@ -118,11 +124,11 @@ pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<SpotifyId>
     drop(wtx);
     drop(itx);
 
-    let mut ids = Vec::new();
+    let mut items = Vec::new();
     let mut scanned = 0;
-    while let Ok(id) = irx.recv_async().await {
-        if let Some(id) = id {
-            ids.push(id);
+    while let Ok(item) = irx.recv_async().await {
+        if let Some(item) = item {
+            items.push(item);
         }
         scanned += 1;
     }
@@ -132,10 +138,10 @@ pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<SpotifyId>
         "scanned {} files in {:?} and found {} spotify ids",
         scanned,
         finish_time - start_time,
-        ids.len()
+        items.len()
     );
 
-    Ok(ids)
+    Ok(items)
 }
 
 pub async fn scan_file(path: &Path) -> Option<SpotifyId> {

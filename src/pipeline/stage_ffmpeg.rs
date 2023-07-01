@@ -37,6 +37,16 @@ where
         work_dir: &Path,
         artifact: StageArtifact,
     ) -> std::io::Result<PathBuf> {
+        if let Some(ext) = artifact.file_path.extension() {
+            if ext.to_str() == Some(self.format.as_str()) {
+                tracing::debug!(
+                    "{} already has the correct format, not converting",
+                    artifact.file_path.display()
+                );
+                return Ok(artifact.file_path);
+            }
+        }
+
         let mut ffmpeg = tokio::process::Command::new(&self.ffmpeg_path);
         let output_path = work_dir.join("stage_ffmpeg").with_extension(&self.format);
         tracing::debug!(
