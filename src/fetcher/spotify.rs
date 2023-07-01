@@ -206,7 +206,7 @@ impl MetadataFetcher for SpotifyMetadataFetcher {
             let kind = match inner.sync_type {
                 librespot::metadata::lyrics::SyncType::Unsynced => {
                     let lines = inner.lines.into_iter().map(|l| l.words).collect::<Vec<_>>();
-                    
+
                     LyricsKind::Unsynchronized(lines)
                 }
                 librespot::metadata::lyrics::SyncType::LineSynced => {
@@ -219,7 +219,7 @@ impl MetadataFetcher for SpotifyMetadataFetcher {
                             text: l.words,
                         })
                         .collect::<Vec<_>>();
-                    
+
                     LyricsKind::Synchronized(lines)
                 }
             };
