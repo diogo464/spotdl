@@ -1,6 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use crate::metadata::MetadataFetcher;
+use crate::fetcher::MetadataFetcher;
 
 use super::{PipelineStage, StageArtifact};
 
@@ -20,14 +23,17 @@ impl FFmpegStage {
 }
 
 #[async_trait::async_trait]
-impl PipelineStage for FFmpegStage {
+impl<F> PipelineStage<F> for FFmpegStage
+where
+    F: MetadataFetcher,
+{
     fn name(&self) -> &'static str {
         "ffmpeg"
     }
 
     async fn process(
         &self,
-        _fetcher: &MetadataFetcher,
+        _fetcher: &Arc<F>,
         work_dir: &Path,
         artifact: StageArtifact,
     ) -> std::io::Result<PathBuf> {

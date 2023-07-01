@@ -1,7 +1,4 @@
-use crate::{
-    metadata::{self, MetadataFetcher},
-    SpotifyId,
-};
+use crate::{fetcher::MetadataFetcher, metadata, SpotifyId};
 
 pub const TAG_SPOTIFY_TRACK_ID: &str = "spotify_track_id";
 pub const TAG_SPOTIFY_ALBUM_ID: &str = "spotify_album_id";
@@ -20,38 +17,47 @@ impl Default for FetchMetadataParams {
     }
 }
 
-pub async fn fetch_metadata_to_tag(
-    track_id: SpotifyId,
-    fetcher: &MetadataFetcher,
-) -> anyhow::Result<id3::Tag> {
+pub async fn fetch_metadata_to_tag<F>(track_id: SpotifyId, fetcher: &F) -> anyhow::Result<id3::Tag>
+where
+    F: MetadataFetcher,
+{
     fetch_metadata_to_tag_with(track_id, fetcher, &FetchMetadataParams::default()).await
 }
 
-pub async fn fetch_metadata_to_tag_with(
+pub async fn fetch_metadata_to_tag_with<F>(
     track_id: SpotifyId,
-    fetcher: &MetadataFetcher,
+    fetcher: &F,
     params: &FetchMetadataParams,
-) -> anyhow::Result<id3::Tag> {
+) -> anyhow::Result<id3::Tag>
+where
+    F: MetadataFetcher,
+{
     let mut tag = id3::Tag::new();
     fetch_metadata_to_existing_tag_with(&mut tag, track_id, fetcher, params).await?;
     Ok(tag)
 }
 
-pub async fn fetch_metadata_to_existing_tag(
+pub async fn fetch_metadata_to_existing_tag<F>(
     tag: &mut id3::Tag,
     track_id: SpotifyId,
-    fetcher: &MetadataFetcher,
-) -> anyhow::Result<()> {
+    fetcher: &F,
+) -> anyhow::Result<()>
+where
+    F: MetadataFetcher,
+{
     fetch_metadata_to_existing_tag_with(tag, track_id, fetcher, &FetchMetadataParams::default())
         .await
 }
 
-pub async fn fetch_metadata_to_existing_tag_with(
+pub async fn fetch_metadata_to_existing_tag_with<F>(
     tag: &mut id3::Tag,
     track_id: SpotifyId,
-    fetcher: &MetadataFetcher,
+    fetcher: &F,
     params: &FetchMetadataParams,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    F: MetadataFetcher,
+{
     use id3::TagLike;
 
     let track = fetcher.get_track(track_id).await?;

@@ -10,12 +10,7 @@ use crate::{
     Credentials, Resource, ResourceId, SpotifyId,
 };
 
-mod null;
-pub use null::NullMetadataCache;
-
-mod filesystem;
-pub use filesystem::FsMetadataCache;
-
+/*
 #[derive(Debug, Error)]
 #[error("Metadata error: {0}")]
 pub struct MetadataError(Box<dyn std::error::Error + Send + Sync + 'static>);
@@ -38,6 +33,7 @@ pub trait MetadataCache: Send + Sync + 'static {
     fn store(&self, key: &str, value: &[u8], ttl: Duration) -> std::io::Result<()>;
     fn load(&self, key: &str) -> std::io::Result<Option<Vec<u8>>>;
 }
+*/
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Artist {
@@ -108,6 +104,7 @@ pub struct Playlist {
     pub tracks: Vec<ResourceId>,
 }
 
+/*
 enum FetcherSession {
     Ready(Session),
     Delayed(Credentials),
@@ -432,3 +429,4 @@ impl MetadataFetcher {
         }
     }
 }
+*/

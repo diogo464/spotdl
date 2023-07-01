@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::OsStr,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
@@ -13,7 +14,7 @@ use clap::{Parser, ValueEnum};
 use indicatif::ProgressStyle;
 use serde::{de::DeserializeOwned, Serialize};
 use spotdl::{
-    metadata::{FsMetadataCache, MetadataFetcher},
+    fetcher::{FsCacheMetadataFetcher, MetadataFetcher, SpotifyMetadataFetcher},
     pipeline::{FFmpegStage, OrganizeStage, PipelineBuilder, PipelineEvents, TagStage},
     scan::ScanParams,
     session::Session,
@@ -359,8 +360,11 @@ async fn subcmd_logout(args: LogoutArgs) -> Result<()> {
 async fn subcmd_info(args: InfoArgs) -> Result<()> {
     let rid = helper_resource_selector_to_id(&args.resource)?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
-    let fetcher = MetadataFetcher::delayed(credentials, cache);
+    let fetcher = FsCacheMetadataFetcher::new(
+        SpotifyMetadataFetcher::delayed(credentials),
+        helper_get_metadata_dir(&args.group_cache)?,
+    )
+    .await?;
 
     let mut output = Vec::new();
     match rid.resource {
@@ -391,8 +395,11 @@ async fn subcmd_download(args: DownloadArgs) -> Result<()> {
     let rid = helper_resource_selector_to_id(&args.resource)?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
-    let fetcher = MetadataFetcher::new(session.clone(), cache);
+    let fetcher = FsCacheMetadataFetcher::new(
+        SpotifyMetadataFetcher::new(session.clone()),
+        helper_get_metadata_dir(&args.group_cache)?,
+    )
+    .await?;
 
     helper_download_rids(
         session,
@@ -465,8 +472,11 @@ async fn subcmd_sync_add(args: SyncAddArgs) -> Result<()> {
 
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
-    let fetcher = MetadataFetcher::new(session.clone(), cache);
+    let fetcher = FsCacheMetadataFetcher::new(
+        SpotifyMetadataFetcher::new(session.clone()),
+        helper_get_metadata_dir(&args.group_cache)?,
+    )
+    .await?;
 
     let description = match rid.resource {
         Resource::Artist => {
@@ -513,8 +523,11 @@ async fn subcmd_sync_download(args: SyncDownloadArgs) -> Result<()> {
     let manifest = helper_read_manifest(&args.manifest.manifest).await?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
-    let fetcher = MetadataFetcher::new(session.clone(), cache);
+    let fetcher = FsCacheMetadataFetcher::new(
+        SpotifyMetadataFetcher::new(session.clone()),
+        helper_get_metadata_dir(&args.group_cache)?,
+    )
+    .await?;
     let rids = manifest.entries().map(|entry| entry.resource_id).collect();
 
     helper_download_rids(
@@ -536,8 +549,13 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     let files = helper_collect_files(&args.path).await?;
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let session = Session::connect(credentials).await?;
-    let cache = FsMetadataCache::new(helper_get_metadata_dir(&args.group_cache)?);
-    let fetcher = MetadataFetcher::new(session.clone(), cache);
+    let fetcher = Arc::new(
+        FsCacheMetadataFetcher::new(
+            SpotifyMetadataFetcher::new(session.clone()),
+            helper_get_metadata_dir(&args.group_cache)?,
+        )
+        .await?,
+    );
 
     let (tx, rx) = flume::bounded::<PathBuf>(args.workers);
     let mut handles = Vec::new();
@@ -570,7 +588,7 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
                     spotdl::tag::fetch_metadata_to_existing_tag_with(
                         &mut tag,
                         track.rid.id,
-                        &fetcher,
+                        &*fetcher,
                         &fetch_metadata_params,
                     )
                     .await?;
@@ -620,17 +638,21 @@ async fn subcmd_update(args: UpdateArgs) -> Result<()> {
     Ok(())
 }
 
-async fn helper_download_rids(
+async fn helper_download_rids<F>(
     session: Session,
-    fetcher: MetadataFetcher,
+    fetcher: F,
     ffmpeg: GroupFFmpeg,
     scan: GroupScanDir,
     output_dir: PathBuf,
     rids: Vec<ResourceId>,
-) -> Result<()> {
+) -> Result<()>
+where
+    F: MetadataFetcher,
+{
     const WORKERS: usize = 4;
 
-    let mut builder = PipelineBuilder::default();
+    let fetcher = Arc::new(fetcher);
+    let mut builder = PipelineBuilder::new(fetcher.clone());
     tracing::info!("scanning for existing files");
     tracing::debug!("scan params: {:?}", scan.create_params());
     let excluded = spotdl::scan::scan_with(scan.create_params()).await?;
@@ -642,7 +664,6 @@ async fn helper_download_rids(
                 .into_iter()
                 .map(|id| ResourceId::new(Resource::Track, id)),
         )
-        .with_fetcher(fetcher.clone())
         .with_session(session)
         .with_stage(TagStage);
     if let Some(ffmpeg) = ffmpeg.create_stage() {
@@ -660,11 +681,14 @@ async fn helper_download_rids(
     Ok(())
 }
 
-async fn helper_download_rids_progress(
+async fn helper_download_rids_progress<F>(
     mut events: PipelineEvents,
-    fetcher: MetadataFetcher,
+    fetcher: Arc<F>,
     workers: usize,
-) -> Result<()> {
+) -> Result<()>
+where
+    F: MetadataFetcher,
+{
     let disable_progress = std::env::var_os("SPOTDL_DISABLE_PROGRESS").is_some();
     if disable_progress {
         while let Some(_) = events.recv().await {}

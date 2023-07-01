@@ -6,8 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+ahash = "0.8.3"
 anyhow = "1.0.71"
 async-trait = "0.1.68"
+bytes = { version = "1.4.0", features = ["serde"] }
 clap = { version = "4.3.10", features = ["derive", "env"] }
 flume = "0.10.14"
 id3 = { version = "1.7.0", features = ["tokio"] }

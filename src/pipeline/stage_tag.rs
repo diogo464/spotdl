@@ -1,6 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use crate::{metadata::MetadataFetcher, tag};
+use crate::{fetcher::MetadataFetcher, tag};
 
 use super::{PipelineStage, StageArtifact};
 
@@ -14,18 +17,21 @@ impl TagStage {
 }
 
 #[async_trait::async_trait]
-impl PipelineStage for TagStage {
+impl<F> PipelineStage<F> for TagStage
+where
+    F: MetadataFetcher,
+{
     fn name(&self) -> &'static str {
         "tag"
     }
 
     async fn process(
         &self,
-        fetcher: &MetadataFetcher,
+        fetcher: &Arc<F>,
         _work_dir: &Path,
         artifact: StageArtifact,
     ) -> std::io::Result<PathBuf> {
-        let tag = match tag::fetch_metadata_to_tag(artifact.resource_id.id, fetcher).await {
+        let tag = match tag::fetch_metadata_to_tag(artifact.resource_id.id, &**fetcher).await {
             Ok(tag) => tag,
             Err(err) => {
                 tracing::error!(

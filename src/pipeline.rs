@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     download::{self, DownloadSink},
-    metadata::MetadataFetcher,
+    fetcher::MetadataFetcher,
     session::Session,
     Resource, ResourceId, SpotifyId,
 };
@@ -28,7 +28,7 @@ type PipelineDownloadSender = flume::Sender<SpotifyId>;
 type PipelineDownloadReceiver = flume::Receiver<SpotifyId>;
 type PipelinePostProcessSender = flume::Sender<DownloadArtifact>;
 type PipelinePostProcessReceiver = flume::Receiver<DownloadArtifact>;
-type PipelineStages = Vec<Arc<dyn PipelineStage>>;
+type PipelineStages<F> = Vec<Arc<dyn PipelineStage<F>>>;
 
 pub enum PipelineEvent {
     DownloadStarted {
@@ -73,12 +73,16 @@ pub struct StageArtifact {
 }
 
 #[async_trait::async_trait]
-pub trait PipelineStage: Send + Sync + 'static {
+pub trait PipelineStage<F>
+where
+    Self: Send + Sync + 'static,
+    F: MetadataFetcher,
+{
     fn name(&self) -> &'static str;
 
     async fn process(
         &self,
-        fetcher: &MetadataFetcher,
+        fetcher: &Arc<F>,
         work_dir: &Path,
         artifact: StageArtifact,
     ) -> std::io::Result<PathBuf>;
@@ -114,19 +118,18 @@ impl PipelineEvents {
     }
 }
 
-pub struct PipelineBuilder {
+pub struct PipelineBuilder<F> {
+    fetcher: Arc<F>,
     sessions: Vec<Session>,
-    fetcher: Option<MetadataFetcher>,
     excluded: HashSet<ResourceId>,
-    stages: Vec<Arc<dyn PipelineStage>>,
+    stages: Vec<Arc<dyn PipelineStage<F>>>,
     workers: usize,
 }
-
-impl Default for PipelineBuilder {
-    fn default() -> Self {
+impl<F> PipelineBuilder<F> {
+    pub fn new(fetcher: Arc<F>) -> Self {
         Self {
+            fetcher,
             sessions: Default::default(),
-            fetcher: Default::default(),
             excluded: Default::default(),
             stages: Default::default(),
             workers: 1,
@@ -134,13 +137,16 @@ impl Default for PipelineBuilder {
     }
 }
 
-impl PipelineBuilder {
+impl<F> PipelineBuilder<F>
+where
+    F: MetadataFetcher,
+{
     pub fn with_session(&mut self, session: Session) -> &mut Self {
         self.sessions.push(session);
         self
     }
 
-    pub fn with_stage(&mut self, stage: impl PipelineStage) -> &mut Self {
+    pub fn with_stage(&mut self, stage: impl PipelineStage<F>) -> &mut Self {
         self.stages.push(Arc::new(stage));
         self
     }
@@ -158,11 +164,6 @@ impl PipelineBuilder {
         self
     }
 
-    pub fn with_fetcher(&mut self, fetcher: MetadataFetcher) -> &mut Self {
-        self.fetcher = Some(fetcher);
-        self
-    }
-
     pub fn with_workers(&mut self, workers: usize) -> &mut Self {
         self.workers = workers;
         self
@@ -174,34 +175,31 @@ impl PipelineBuilder {
         let (exclude_tx, exclude_rx) = flume::bounded(128);
         let (download_tx, download_rx) = flume::bounded(0);
         let (postprocess_tx, postprocess_rx) = flume::bounded(0);
+        let fetcher = self.fetcher;
 
-        if let Some(fetcher) = self.fetcher {
-            tokio::spawn(worker_fetcher(input_rx, fetcher.clone(), exclude_tx));
-            tokio::spawn(worker_exclude(
-                exclude_rx,
-                download_tx,
+        tokio::spawn(worker_fetcher(input_rx, fetcher.clone(), exclude_tx));
+        tokio::spawn(worker_exclude(
+            exclude_rx,
+            download_tx,
+            fetcher.clone(),
+            self.excluded,
+        ));
+        for session in self.sessions {
+            tokio::spawn(worker_download(
+                download_rx.clone(),
+                session,
                 fetcher.clone(),
-                self.excluded,
+                postprocess_tx.clone(),
+                event_tx.clone(),
             ));
-            for session in self.sessions {
-                tokio::spawn(worker_download(
-                    download_rx.clone(),
-                    session,
-                    fetcher.clone(),
-                    postprocess_tx.clone(),
-                    event_tx.clone(),
-                ));
-            }
-            for _ in 0..self.workers {
-                tokio::spawn(worker_postprocess(
-                    postprocess_rx.clone(),
-                    fetcher.clone(),
-                    self.stages.clone(),
-                    event_tx.clone(),
-                ));
-            }
-        } else {
-            tracing::warn!("No metadata fetcher provided to pipeline, nothing will be downloaded");
+        }
+        for _ in 0..self.workers {
+            tokio::spawn(worker_postprocess(
+                postprocess_rx.clone(),
+                fetcher.clone(),
+                self.stages.clone(),
+                event_tx.clone(),
+            ));
         }
 
         (
@@ -280,11 +278,13 @@ impl DownloadSink for EventSink {
     }
 }
 
-async fn worker_fetcher(
+async fn worker_fetcher<F>(
     mut rx: PipelineInputReceiver,
-    fetcher: MetadataFetcher,
+    fetcher: Arc<F>,
     tx: PipelineDownloadSender,
-) {
+) where
+    F: MetadataFetcher,
+{
     use anyhow::Context;
 
     while let Some(rid) = rx.recv().await {
@@ -341,12 +341,14 @@ async fn worker_fetcher(
     }
 }
 
-async fn worker_exclude(
+async fn worker_exclude<F>(
     rx: PipelineDownloadReceiver,
     tx: PipelineDownloadSender,
-    fetcher: MetadataFetcher,
+    fetcher: Arc<F>,
     excluded: HashSet<ResourceId>,
-) {
+) where
+    F: MetadataFetcher,
+{
     // TODO: exclude is a set of ResourceId but we only support excluding tracks right now
     // this could be moved to the step before
     while let Ok(track_id) = rx.recv_async().await {
@@ -375,13 +377,15 @@ async fn worker_exclude(
     }
 }
 
-async fn worker_download(
+async fn worker_download<F>(
     rx: PipelineDownloadReceiver,
     session: Session,
-    fetcher: MetadataFetcher,
+    fetcher: Arc<F>,
     tx: PipelinePostProcessSender,
     ev: PipelineEventSender,
-) {
+) where
+    F: MetadataFetcher,
+{
     use anyhow::Context;
 
     while let Ok(track_id) = rx.recv_async().await {
@@ -439,12 +443,14 @@ async fn worker_download(
     }
 }
 
-async fn worker_postprocess(
+async fn worker_postprocess<F>(
     rx: PipelinePostProcessReceiver,
-    fetcher: MetadataFetcher,
-    stages: PipelineStages,
+    fetcher: Arc<F>,
+    stages: PipelineStages<F>,
     ev: PipelineEventSender,
-) {
+) where
+    F: MetadataFetcher,
+{
     while let Ok(download_artifact) = rx.recv_async().await {
         evs(
             &ev,

@@ -1,6 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use crate::metadata::MetadataFetcher;
+use crate::fetcher::MetadataFetcher;
 
 use super::{PipelineStage, StageArtifact};
 
@@ -18,14 +21,17 @@ impl OrganizeStage {
 }
 
 #[async_trait::async_trait]
-impl PipelineStage for OrganizeStage {
+impl<F> PipelineStage<F> for OrganizeStage
+where
+    F: MetadataFetcher,
+{
     fn name(&self) -> &'static str {
         "organize"
     }
 
     async fn process(
         &self,
-        fetcher: &MetadataFetcher,
+        fetcher: &Arc<F>,
         _work_dir: &Path,
         artifact: StageArtifact,
     ) -> std::io::Result<PathBuf> {
