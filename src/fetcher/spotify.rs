@@ -27,14 +27,15 @@ macro_rules! fetch_helper {
     ($self:expr, $res:expr, $id:expr, $lstype:ty) => {{
         let lsid = ResourceId::new($res, $id).to_librespot();
         let session = $self.session().await?;
+        let mut sleep = Duration::from_secs(1);
         let metadata = loop {
             let result = <$lstype>::get(session.librespot(), &lsid).await;
             match result {
                 Ok(artist) => break artist,
                 Err(err) if err.kind == librespot::core::error::ErrorKind::ResourceExhausted => {
-                    // TODO: maybe make this random and exponential
-                    tracing::debug!("librespot rate limited, waiting 1s");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tracing::debug!("librespot rate limited, waiting {:?}", sleep);
+                    tokio::time::sleep(sleep).await;
+                    sleep *= 2;
                 }
                 Err(err) => return Err(std::io::Error::other(err)),
             }
