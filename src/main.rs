@@ -398,6 +398,14 @@ struct InfoArgs {
 
     #[clap(flatten)]
     resource: ResourceSelector,
+
+    /// Output pretty JSON.
+    #[clap(long)]
+    pretty: bool,
+
+    /// Output as a JSON array.
+    #[clap(long)]
+    array: bool,
 }
 
 /// Download a resource.
@@ -572,29 +580,54 @@ async fn subcmd_info(args: InfoArgs) -> Result<()> {
     let credentials = helper_get_credentials(&args.group_cache, &args.group_auth).await?;
     let fetcher = helper_create_fetcher_delayed(credentials, &args.group_cache).await?;
 
+    fn to_writer<T>(v: &mut Vec<u8>, value: &T, pretty: bool) -> Result<()>
+    where
+        T: Serialize,
+    {
+        if pretty {
+            serde_json::to_writer_pretty(v, value)?;
+        } else {
+            serde_json::to_writer(v, value)?;
+        }
+        Ok(())
+    }
+
     let mut output = Vec::new();
+    if args.array {
+        output.extend(b"[\n");
+    }
     for rid in rids {
         match rid.resource {
             Resource::Artist => {
                 let artist = fetcher.get_artist(rid.id).await?;
-                serde_json::to_writer_pretty(&mut output, &artist)?;
+                to_writer(&mut output, &artist, args.pretty)?;
             }
             Resource::Album => {
                 let album = fetcher.get_album(rid.id).await?;
-                serde_json::to_writer_pretty(&mut output, &album)?;
+                to_writer(&mut output, &album, args.pretty)?;
             }
             Resource::Track => {
                 let track = fetcher.get_track(rid.id).await?;
-                serde_json::to_writer_pretty(&mut output, &track)?;
+                to_writer(&mut output, &track, args.pretty)?;
             }
             Resource::Playlist => {
                 let playlist = fetcher.get_playlist(rid.id).await?;
-                serde_json::to_writer_pretty(&mut output, &playlist)?;
+                to_writer(&mut output, &playlist, args.pretty)?;
             }
         }
 
+        output.extend(b"\n");
         tokio::io::stdout().write_all(&output).await?;
         output.clear();
+        if args.array {
+            output.extend(b",\n");
+        }
+    }
+
+    if args.array {
+        output.clear();
+        output.extend(b"]\n");
+        tokio::io::stdout().write_all(&output).await?;
     }
 
     Ok(())
