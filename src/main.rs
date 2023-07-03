@@ -168,7 +168,7 @@ struct GroupScanDir {
     ///
     /// Scanned directories are searched for audio files containing spotify ids in their tags.
     /// Any ids found will not be downloaded again.
-    #[clap(long, default_value = ".")]
+    #[clap(long)]
     scan: Vec<PathBuf>,
 
     /// Directories to exclude during scanning.
@@ -961,8 +961,10 @@ where
     let fetcher = Arc::new(fetcher);
     let mut builder = PipelineBuilder::new(fetcher.clone());
     tracing::info!("scanning for existing files");
-    tracing::debug!("scan params: {:?}", scan.create_params());
-    let excluded = spotdl::scan::scan_with(scan.create_params()).await?;
+    let mut scan_params = scan.create_params();
+    scan_params.include(&output_dir);
+    tracing::debug!("scan params: {:?}", scan_params);
+    let excluded = spotdl::scan::scan_with(scan_params).await?;
     tracing::info!("found {} existing tracks", excluded.len());
     builder
         .with_workers(WORKERS)
