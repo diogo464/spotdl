@@ -8,10 +8,10 @@ use crate::{id, tag, SpotifyId};
 
 const EXTENSIONS: &[&str] = &["mp3", "wav", "flac", "ogg", "m4a"];
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ScanParams {
-    include: Vec<PathBuf>,
-    exclude: Vec<PathBuf>,
+    pub include: Vec<PathBuf>,
+    pub exclude: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,9 +41,26 @@ impl ScanParams {
         this
     }
 
-    fn should_exclude(&self, path: &Path) -> bool {
+    pub fn should_exclude(&self, path: &Path) -> bool {
+        let path_canon = match path.canonicalize() {
+            Ok(path) => path,
+            Err(_) => {
+                tracing::warn!("failed to canonicalize path '{}'", path.display());
+                return true;
+            }
+        };
         for exclude in &self.exclude {
-            if path.starts_with(exclude) {
+            let exclude_canon = match exclude.canonicalize() {
+                Ok(_) => exclude,
+                Err(_) => {
+                    tracing::warn!(
+                        "failed to canonicalize exclude path '{}'",
+                        exclude.display()
+                    );
+                    continue;
+                }
+            };
+            if path_canon.starts_with(exclude_canon) {
                 return true;
             }
         }
@@ -56,6 +73,8 @@ pub async fn scan(dir: impl Into<PathBuf>) -> std::io::Result<Vec<ScanItem>> {
 }
 
 pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<ScanItem>> {
+    // TODO: this does not handle loops in the filesystem
+    // It might be better to first list all the files and then spawn the tasks to scan them
     const WORKERS: usize = 128;
 
     struct Work {
@@ -81,6 +100,11 @@ pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<ScanItem>>
         let itx = itx.clone();
         tokio::spawn(async move {
             while let Ok(Work { path, sender }) = wrx.recv_async().await {
+                if path.is_symlink() {
+                    tracing::warn!("skipping symlinked path '{}'", path.display());
+                    continue;
+                }
+
                 let path = match path.canonicalize() {
                     Ok(path) => path,
                     Err(err) => {
@@ -93,6 +117,7 @@ pub async fn scan_with(mut params: ScanParams) -> std::io::Result<Vec<ScanItem>>
                     continue;
                 }
 
+                tracing::trace!("scanning path: {}", path.display());
                 if path.is_file() {
                     let item = scan_file(&path).await.map(move |id| ScanItem { path, id });
                     itx.send_async(item).await.unwrap();

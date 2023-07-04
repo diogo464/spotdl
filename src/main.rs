@@ -5,14 +5,14 @@ use std::{
     collections::{HashMap, VecDeque},
     ffi::OsStr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use indicatif::ProgressStyle;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use spotdl::{
     fetcher::{
         FsCache, FsCacheMetadataFetcher, FsCacheMetadataFetcherParams, MetadataFetcher,
@@ -22,11 +22,14 @@ use spotdl::{
         FFmpegStage, OrganizeStage, PipelineBuilder, PipelineEvents, PipelineSource,
         PipelineSourceAction, TagStage,
     },
-    scan::ScanParams,
+    scan::{ScanItem, ScanParams},
     session::Session,
-    Credentials, LoginCredentials, Resource, ResourceId,
+    Credentials, LoginCredentials, Resource, ResourceId, SpotifyId,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
+    net::{UnixListener, UnixStream},
+};
 
 // TODO: remove some unwraps
 
@@ -265,6 +268,21 @@ impl GroupFFmpeg {
 }
 
 #[derive(Debug, Parser)]
+struct GroupWatchSocket {
+    /// Path to the socket.
+    #[clap(long, env = "SPOTDL_WATCH_SOCKET")]
+    socket: Option<PathBuf>,
+}
+
+impl GroupWatchSocket {
+    fn socket_path(&self) -> PathBuf {
+        self.socket
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("/tmp/spotdl.sock"))
+    }
+}
+
+#[derive(Debug, Parser)]
 enum SubCmd {
     Login(LoginArgs),
     Logout(LogoutArgs),
@@ -274,6 +292,7 @@ enum SubCmd {
     Sync(SyncArgs),
     Update(UpdateArgs),
     Cache(CacheArgs),
+    Watcher(WatcherArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -583,6 +602,52 @@ struct CacheRemoveArgs {
 
     /// Key to remove.
     keys: Vec<String>,
+}
+
+/// Watch for track ids.
+///
+/// This command is useful when working with large music collections.
+/// It allows you to track which tracks are present in a set of directories without have to rescan
+/// them each time since that would be slow.
+#[derive(Debug, Parser)]
+struct WatcherArgs {
+    #[clap(subcommand)]
+    action: WatcherAction,
+}
+
+#[derive(Debug, Parser)]
+enum WatcherAction {
+    Watch(WatcherWatchArgs),
+    List(WatcherListArgs),
+    Contains(WatcherContainsArgs),
+}
+
+/// Watch a set of directories.
+#[derive(Debug, Parser)]
+struct WatcherWatchArgs {
+    #[clap(flatten)]
+    group_scan: GroupScanDir,
+
+    #[clap(flatten)]
+    group_socket: GroupWatchSocket,
+}
+
+/// List all track ids being watched.
+#[derive(Debug, Parser)]
+struct WatcherListArgs {
+    #[clap(flatten)]
+    group_socket: GroupWatchSocket,
+}
+
+/// Check if a track id is being watched.
+#[derive(Debug, Parser)]
+struct WatcherContainsArgs {
+    #[clap(flatten)]
+    group_socket: GroupWatchSocket,
+
+    /// Track id to check.
+    /// Can be a URL, URI or ID.
+    track_id: String,
 }
 
 async fn subcmd_login(args: LoginArgs) -> Result<()> {
@@ -944,6 +1009,220 @@ async fn subcmd_cache_remove(args: CacheRemoveArgs) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+enum WatcherRequest {
+    List,
+    Contains(SpotifyId),
+}
+
+#[derive(Debug)]
+struct WatcherInner {
+    paths: HashMap<PathBuf, SpotifyId>,
+}
+
+#[derive(Debug, Clone)]
+struct Watcher(Arc<Mutex<WatcherInner>>);
+
+impl Watcher {
+    async fn new(params: ScanParams) -> Result<(Self, notify::INotifyWatcher)> {
+        use notify::Watcher;
+
+        let this = Self(Arc::new(Mutex::new(WatcherInner {
+            paths: Default::default(),
+        })));
+
+        let mut watcher = notify::recommended_watcher({
+            let params = params.clone();
+            let watcher = this.clone();
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(ev) = res {
+                    if ev.need_rescan() {
+                        // TODO: implement i guess
+                        unimplemented!();
+                    }
+                    match ev.kind {
+                        notify::EventKind::Create(_) | notify::EventKind::Modify(_) => {
+                            for path in ev.paths {
+                                if params.should_exclude(&path) {
+                                    continue;
+                                }
+                                match futures::executor::block_on(spotdl::scan::scan_file(&path)) {
+                                    Some(id) => {
+                                        let mut inner = watcher.0.lock().unwrap();
+                                        tracing::info!("found new item: {} {}", id, path.display());
+                                        inner.paths.insert(path, id);
+                                    }
+                                    None => {
+                                        let mut inner = watcher.0.lock().unwrap();
+                                        if let Some(id) = inner.paths.remove(&path) {
+                                            tracing::info!(
+                                                "removed item: {} {}",
+                                                id,
+                                                path.display()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        notify::EventKind::Remove(_) => {
+                            let mut inner = watcher.0.lock().unwrap();
+                            for path in ev.paths {
+                                if let Some(id) = inner.paths.remove(&path) {
+                                    tracing::info!("removed item: {} {}", id, path.display());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        })
+        .context("failed to create watcher")?;
+
+        for path in params.include.iter() {
+            watcher
+                .watch(&path, notify::RecursiveMode::Recursive)
+                .context("failed to watch path")?;
+        }
+
+        tracing::debug!("scanning for existing files");
+        let items = spotdl::scan::scan_with(params).await?;
+        let mut inner = this.0.lock().unwrap();
+        for item in items {
+            inner.paths.insert(item.path, item.id);
+        }
+        drop(inner);
+        tracing::debug!("done scanning for existing files");
+
+        Ok((this, watcher))
+    }
+
+    fn contains(&self, track_id: SpotifyId) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .paths
+            .values()
+            .any(|id| id == &track_id)
+    }
+
+    fn list(&self) -> Result<Vec<ScanItem>> {
+        let inner = self.0.lock().unwrap();
+        let mut items = Vec::with_capacity(inner.paths.len());
+        for (path, id) in &inner.paths {
+            items.push(ScanItem {
+                path: path.clone(),
+                id: *id,
+            });
+        }
+        Ok(items)
+    }
+}
+
+async fn subcmd_watcher(args: WatcherArgs) -> Result<()> {
+    match args.action {
+        WatcherAction::Watch(args) => subcmd_watcher_watch(args).await,
+        WatcherAction::List(args) => subcmd_watcher_list(args).await,
+        WatcherAction::Contains(args) => subcmd_watcher_contains(args).await,
+    }
+}
+
+async fn subcmd_watcher_watch(args: WatcherWatchArgs) -> Result<()> {
+    async fn handle_request(mut stream: UnixStream, watcher: Watcher) -> Result<()> {
+        let request = {
+            let mut buffer = Vec::new();
+            let len = stream.read_u16().await?;
+            buffer.resize(len as usize, 0);
+            stream.read_exact(&mut buffer).await?;
+            serde_json::from_slice::<WatcherRequest>(&buffer)?
+        };
+
+        match request {
+            WatcherRequest::List => {
+                tracing::debug!("handling list request");
+                let mut writer = BufWriter::new(stream);
+                let items = watcher.list()?;
+                for item in items {
+                    let line = format!("{} {}\n", item.id, item.path.display());
+                    writer.write_all(line.as_bytes()).await?;
+                }
+                writer.flush().await?;
+            }
+            WatcherRequest::Contains(id) => {
+                tracing::debug!("handling contains request");
+                let mut writer = BufWriter::new(stream);
+                let contains = watcher.contains(id);
+                writer.write_i8(if contains { 1 } else { 0 }).await?;
+                writer.flush().await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    let socket_path = args.group_socket.socket_path();
+    if socket_path.exists() {
+        tokio::fs::remove_file(&socket_path).await?;
+    }
+    let listener = UnixListener::bind(socket_path).context("failed to bind socket")?;
+    let (watcher, _nofity) = Watcher::new(args.group_scan.create_params()).await?;
+
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(err) => {
+                tracing::error!("failed to accept connection: {}", err);
+                // just in case this is constantly failing, sleep for a bit
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+        };
+
+        tracing::debug!("accepted connection");
+        tokio::spawn({
+            let watcher = watcher.clone();
+            async move {
+                if let Err(err) = handle_request(stream, watcher).await {
+                    tracing::error!("failed to handle request: {}", err);
+                }
+            }
+        });
+    }
+}
+
+async fn subcmd_watcher_list(args: WatcherListArgs) -> Result<()> {
+    let socket_path = args.group_socket.socket_path();
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .context("failed to connect to socket")?;
+    let request = WatcherRequest::List;
+    let request = serde_json::to_vec(&request)?;
+    stream.write_u16(request.len() as u16).await?;
+    stream.write_all(&request).await?;
+    tokio::io::copy(&mut stream, &mut tokio::io::stdout()).await?;
+    Ok(())
+}
+
+async fn subcmd_watcher_contains(args: WatcherContainsArgs) -> Result<()> {
+    let id = spotdl::id::parse(&args.track_id, Some(Resource::Track))
+        .context("failed to parse key")?
+        .id;
+    let socket_path = args.group_socket.socket_path();
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .context("failed to connect to socket")?;
+    let request = WatcherRequest::Contains(id);
+    let request = serde_json::to_vec(&request)?;
+    stream.write_u16(request.len() as u16).await?;
+    stream.write_all(&request).await?;
+    let contains = stream.read_i8().await?;
+    if contains == 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 async fn helper_download_rids<F>(
     session: Session,
     fetcher: F,
@@ -1290,6 +1569,7 @@ async fn main() -> Result<()> {
         SubCmd::Sync(args) => subcmd_sync(args).await?,
         SubCmd::Update(args) => subcmd_update(args).await?,
         SubCmd::Cache(args) => subcmd_cache(args).await?,
+        SubCmd::Watcher(args) => subcmd_watcher(args).await?,
     };
 
     Ok(())
