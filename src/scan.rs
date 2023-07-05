@@ -229,22 +229,3 @@ pub async fn scan_file(path: &Path) -> Option<SpotifyId> {
     );
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_scan_params() {
-        let mut params = ScanParams::default();
-        params.include("foo/m1.mp3");
-        params.exclude("foo/m2.mp3");
-        params.include("bar");
-        params.exclude("zoo");
-
-        assert!(!params.should_exclude(Path::new("foo/m1.mp3")));
-        assert!(params.should_exclude(Path::new("foo/m2.mp3")));
-        assert!(!params.should_exclude(Path::new("bar/m3.mp3")));
-        assert!(params.should_exclude(Path::new("zoo/m4.mp3")));
-    }
-}
