@@ -17,7 +17,7 @@ spotdl download spotify:album:7vfuTRXIAYJz5Uc8SddnTr
 
 The download command tries to avoid downloading any already existing tracks by looking at the metadata of existing tracks in the destination directory.
 
-![](media/spotdl-download-album.gif)
+![](https://user-images.githubusercontent.com/21161320/251105319-71d1413b-e4d6-4da8-9796-ac9e62285fc1.gif)
 
 ### Synchronizing a playlist to a directory
 ```bash
@@ -29,6 +29,8 @@ By default spotdl will cache playlist metadata for a few hours so if you want to
 ```bash
 spotdl cache remove spotify:playlist:7dXMxn9chL56TWB31fa33J
 ```
+
+![](https://user-images.githubusercontent.com/21161320/251105326-38321d2d-caeb-4dab-b649-269d875817e0.gif)
 
 ## Commands
 
@@ -53,7 +55,7 @@ Print information about a spotify resource.
 spotdl info spotify:playlist:7dXMxn9chL56TWB31fa33J
 ```
 
-![](media/spotdl-info.gif)
+![](https://user-images.githubusercontent.com/21161320/251105331-e7b22bd4-9621-4ce2-9227-264d4fc8153b.gif)
 
 ### **spotdl download**
 Download a spotify resource to a directory. This will avoid downloading any tracks that already exist in the output directory.
@@ -65,7 +67,7 @@ An example of this command was already shown above, for more details use `spotdl
 ### **spotdl scan**
 Scan all files in a directory and print the spotify ID and path of any tracks.
 
-![](media/spotdl-scan.gif)
+![](https://user-images.githubusercontent.com/21161320/251105333-79739f66-95cc-4e6d-adb5-d54436536065.gif)
 
 ### **spotdl sync**
 The `spotdl sync` commands are just helpers that maintain a manifest file that contains a list of spotify resources. These resources can then be synced using `spotdl sync download`. To add and remove resources the commands `spotdl sync add` and `spotdl sync remove` can be used. Use the `--help` flag with any of these commands to see all the possible flags.
