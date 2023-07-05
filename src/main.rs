@@ -1552,14 +1552,30 @@ where
 #[tokio::main]
 async fn main() -> Result<()> {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_default_env()
-        .or_else(|_| EnvFilter::try_new("warn,spotdl=info"))
-        .unwrap();
+    let args = Args::parse();
+
+    let filter = if (std::matches!(args.subcmd, SubCmd::Download(_))
+        || std::matches!(
+            args.subcmd,
+            SubCmd::Sync(SyncArgs {
+                action: SyncAction::Download(_)
+            })
+        ))
+        && std::env::var_os("SPOTDL_DISABLE_PROGRESS").is_none()
+    {
+        EnvFilter::try_from_default_env()
+            .or_else(|_| EnvFilter::try_new("error"))
+            .unwrap()
+    } else {
+        EnvFilter::try_from_default_env()
+            .or_else(|_| EnvFilter::try_new("warn,spotdl=info"))
+            .unwrap()
+    };
+
     tracing_subscriber::fmt::fmt()
         .with_env_filter(filter)
         .init();
 
-    let args = Args::parse();
     match args.subcmd {
         SubCmd::Login(args) => subcmd_login(args).await?,
         SubCmd::Logout(args) => subcmd_logout(args).await?,
