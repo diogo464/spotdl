@@ -120,7 +120,7 @@ where
         ..Default::default()
     };
     let (sink, rx) = DownloadSinkWrapper::new(sink);
-    let mut player = Player::new(
+    let player = Player::new(
         player_config,
         session.librespot().clone(),
         Box::new(NoOpVolume),

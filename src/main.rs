@@ -1,4 +1,3 @@
-#![feature(io_error_other)]
 #![feature(try_blocks)]
 
 use std::{
@@ -1082,7 +1081,7 @@ impl Watcher {
 
         for path in params.include.iter() {
             watcher
-                .watch(&path, notify::RecursiveMode::Recursive)
+                .watch(path, notify::RecursiveMode::Recursive)
                 .context("failed to watch path")?;
         }
 
