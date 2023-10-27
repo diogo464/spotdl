@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -47,6 +49,14 @@ impl std::fmt::Display for SpotifyId {
     }
 }
 
+impl FromStr for SpotifyId {
+    type Err = IdParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        parse_id(s)
+    }
+}
+
 impl Serialize for SpotifyId {
     fn serialize<S: serde::Serializer>(
         &self,
@@ -83,6 +93,14 @@ impl std::fmt::Display for ResourceId {
 impl From<(Resource, SpotifyId)> for ResourceId {
     fn from((resource, id): (Resource, SpotifyId)) -> Self {
         Self { resource, id }
+    }
+}
+
+impl FromStr for ResourceId {
+    type Err = IdParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        parse(s, None)
     }
 }
 
