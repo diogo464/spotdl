@@ -11,6 +11,12 @@ pub use null::NullDownloadSink;
 mod memory;
 pub use memory::MemoryDownloadSink;
 
+mod file;
+pub use file::FileDownloadSink;
+
+mod writer;
+pub use writer::WriterDownloadSink;
+
 use crate::{session::Session, Resource, ResourceId, SpotifyId};
 
 pub const SAMPLE_RATE: u32 = librespot::playback::SAMPLE_RATE;
