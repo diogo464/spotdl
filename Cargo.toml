@@ -14,7 +14,7 @@ bytes = { version = "1.5.0", features = ["serde"] }
 clap = { version = "4.4.12", features = ["derive", "env"] }
 flume = "0.10.14"
 futures = "0.3.28"
-id3 = { version = "1.7.0", features = ["tokio"] }
+id3 = { version = "1.12.0", features = ["tokio"] }
 indicatif = "0.17.5"
 inquire = "0.6.2"
 librespot = { git = "https://github.com/librespot-org/librespot", branch = "dev", default_features = false }
