@@ -10,7 +10,7 @@ ahash = "0.8.7"
 anyhow = "1.0.78"
 async-trait = "0.1.68"
 base64 = "0.21.2"
-bytes = { version = "1.4.0", features = ["serde"] }
+bytes = { version = "1.5.0", features = ["serde"] }
 clap = { version = "4.3.10", features = ["derive", "env"] }
 flume = "0.10.14"
 futures = "0.3.28"
