@@ -6,27 +6,27 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ahash = "0.8.7"
-anyhow = "1.0.79"
-async-trait = "0.1.68"
-base64 = "0.21.2"
-bytes = { version = "1.5.0", features = ["serde"] }
-clap = { version = "4.4.18", features = ["derive", "env"] }
-flume = "0.10.14"
-futures = "0.3.28"
-id3 = { version = "1.12.0", features = ["tokio"] }
-indicatif = "0.17.5"
-inquire = "0.6.2"
+ahash = "0.8.11"
+anyhow = "1.0.82"
+async-trait = "0.1.80"
+base64 = "0.22.0"
+bytes = { version = "1.6.0", features = ["serde"] }
+clap = { version = "4.5.4", features = ["derive", "env"] }
+flume = "0.11.0"
+futures = "0.3.30"
+id3 = { version = "1.13.1", features = ["tokio"] }
+indicatif = "0.17.8"
+inquire = "0.7.4"
 librespot = { git = "https://github.com/librespot-org/librespot", branch = "dev", default_features = false }
 notify = "6.1.1"
-reqwest = "0.11.23"
-serde = { version = "1.0.196", features = ["derive"] }
-serde_json = "1.0.113"
-tempfile = "3.9.0"
-thiserror = "1.0.56"
+reqwest = "0.12.4"
+serde = { version = "1.0.198", features = ["derive"] }
+serde_json = "1.0.116"
+tempfile = "3.10.1"
+thiserror = "1.0.58"
 tokio = { version = "1.37.0", features = ["full"] }
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 wav = "1.0.0"
 
 [profile.release]
