@@ -110,6 +110,42 @@ impl SpotifyMetadataFetcher {
             }
         }
     }
+
+    async fn get_lyrics_for(
+        &self,
+        id: crate::SpotifyId,
+        track: &librespot::metadata::Track,
+    ) -> std::io::Result<Option<Lyrics>> {
+        if !track.has_lyrics {
+            return Ok(None);
+        }
+        let lyrics = self.get_librespot_lyrics(id).await?;
+        let inner = lyrics.lyrics;
+        let kind = match inner.sync_type {
+            librespot::metadata::lyrics::SyncType::Unsynced => {
+                let lines = inner.lines.into_iter().map(|l| l.words).collect::<Vec<_>>();
+
+                LyricsKind::Unsynchronized(lines)
+            }
+            librespot::metadata::lyrics::SyncType::LineSynced => {
+                let lines = inner
+                    .lines
+                    .into_iter()
+                    .map(|l| SyncedLine {
+                        start_time: Duration::from_millis(l.start_time_ms.parse().unwrap()),
+                        end_time: Duration::from_millis(l.end_time_ms.parse().unwrap()),
+                        text: l.words,
+                    })
+                    .collect::<Vec<_>>();
+
+                LyricsKind::Synchronized(lines)
+            }
+        };
+        Ok(Some(Lyrics {
+            language: inner.language,
+            kind,
+        }))
+    }
 }
 
 #[async_trait::async_trait]
@@ -200,35 +236,15 @@ impl MetadataFetcher for SpotifyMetadataFetcher {
 
     async fn get_track(&self, id: crate::SpotifyId) -> std::io::Result<crate::metadata::Track> {
         let track = self.get_librespot_track(id).await?;
-        let lyrics = if track.has_lyrics {
-            let lyrics = self.get_librespot_lyrics(id).await?;
-            let inner = lyrics.lyrics;
-            let kind = match inner.sync_type {
-                librespot::metadata::lyrics::SyncType::Unsynced => {
-                    let lines = inner.lines.into_iter().map(|l| l.words).collect::<Vec<_>>();
 
-                    LyricsKind::Unsynchronized(lines)
-                }
-                librespot::metadata::lyrics::SyncType::LineSynced => {
-                    let lines = inner
-                        .lines
-                        .into_iter()
-                        .map(|l| SyncedLine {
-                            start_time: Duration::from_millis(l.start_time_ms.parse().unwrap()),
-                            end_time: Duration::from_millis(l.end_time_ms.parse().unwrap()),
-                            text: l.words,
-                        })
-                        .collect::<Vec<_>>();
-
-                    LyricsKind::Synchronized(lines)
-                }
-            };
-            Some(Lyrics {
-                language: inner.language,
-                kind,
-            })
-        } else {
-            None
+        let lyrics = match self.get_lyrics_for(id, &track).await {
+            Ok(v) => v,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to fetch lyrics for {id}, returning None instead of failing, error: {err}"
+                );
+                None
+            }
         };
 
         let artists = track
